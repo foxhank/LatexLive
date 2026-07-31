@@ -34,3 +34,4 @@ yarn-error.log*
 test.*
 *.aux
 *.pdf
+PLAN.md
