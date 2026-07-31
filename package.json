@@ -8,9 +8,9 @@
     "build": "node scripts/build.mjs",
     "start": "npm run build:dev && electron .",
     "dev": "npm run build:dev && electron . --dev",
-    "dist:portable": "npm run build && electron-builder --win portable --config electron-builder.yml",
-    "dist:nsis": "npm run build && electron-builder --win nsis --config electron-builder.yml",
-    "dist": "npm run build && electron-builder --win --config electron-builder.yml"
+    "dist:portable": "npm run build && electron-builder --win portable --config .github/electron-builder/with-tex.yml",
+    "dist:nsis": "npm run build && electron-builder --win nsis --config .github/electron-builder/with-tex.yml",
+    "dist": "npm run build && electron-builder --win --config .github/electron-builder/with-tex.yml"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

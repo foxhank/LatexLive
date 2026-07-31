@@ -13,9 +13,9 @@ jobs:
       matrix:
         variant:
           - name: with-tex
-            config: electron-builder.yml
+            config: .github/electron-builder/with-tex.yml
           - name: no-tex
-            config: electron-builder-no-tex.yml
+            config: .github/electron-builder/no-tex.yml
     steps:
       - name: Checkout
         uses: actions/checkout@v4
