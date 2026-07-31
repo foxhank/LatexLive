@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' blob:; worker-src 'self' blob:;">
+  <title>LiveLaTeX</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div id="titlebar">
+      <div id="titlebar-left">
+        <span id="app-title">LiveLaTeX</span>
+        <span id="file-path"></span>
+        <span id="modified-indicator"></span>
+      </div>
+      <div id="titlebar-center">
+        <button id="btn-compile" title="手动编译 (Ctrl+Enter)">▶ <span class="shortcut-hint">编译</span></button>
+        <button id="btn-synctex" title="正反向跳转模式">⇄ <span class="shortcut-hint">跳转</span></button>
+        <span id="compile-status" class="status-idle">就绪</span>
+        <span id="compile-timer" class="hidden"></span>
+      </div>
+      <div id="titlebar-right">
+        <button id="btn-settings" title="设置">⚙</button>
+      </div>
+    </div>
+    <div id="main">
+      <div id="editor-panel">
+        <div id="editor-toolbar">
+          <button id="btn-new" title="新建 (Ctrl+N)">📄 新建</button>
+          <button id="btn-open" title="打开 (Ctrl+O)">📂 打开</button>
+          <button id="btn-save" title="保存 (Ctrl+S)">💾 保存</button>
+          <button id="btn-save-as" title="另存为 (Ctrl+Shift+S)">💾 另存为</button>
+          <span class="toolbar-file" id="current-file"></span>
+        </div>
+        <div id="editor-container"></div>
+        <div id="error-panel" class="hidden">
+          <div id="error-header">
+            <span>⚠ 编译错误</span>
+            <button id="error-close">×</button>
+          </div>
+          <div id="error-list"></div>
+        </div>
+      </div>
+      <div id="divider"></div>
+      <div id="viewer-panel">
+        <div id="viewer-toolbar">
+          <button id="btn-zoom-out" title="缩小">−</button>
+          <span id="zoom-level">100%</span>
+          <button id="btn-zoom-in" title="放大">+</button>
+          <span id="page-info">— / —</span>
+          <button id="btn-fit-width" title="适应宽度">↔</button>
+          <button id="btn-fit-page" title="适应页面">⊞</button>
+        </div>
+        <div id="viewer-container">
+          <canvas id="pdf-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>设置</h2>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>LaTeX 引擎</label>
+          <select id="setting-engine">
+            <option value="xelatex">XeLaTeX (推荐, 支持中文)</option>
+            <option value="pdflatex">pdfLaTeX</option>
+            <option value="lualatex">LuaLaTeX</option>
+            <option value="latexmk">latexmk</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>编译器路径 (可选)</label>
+          <div class="input-with-button">
+            <input type="text" id="setting-engine-path" placeholder="留空则自动探测 PATH">
+            <button id="btn-browse-engine">浏览...</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>编辑器字体</label>
+          <input type="text" id="setting-editor-font" value="Consolas">
+        </div>
+        <div class="form-group">
+          <label>字体大小</label>
+          <input type="number" id="setting-editor-font-size" min="10" max="32" value="14">
+        </div>
+        <div class="form-group">
+          <label>自动编译防抖 (毫秒)</label>
+          <input type="number" id="setting-debounce" min="200" max="5000" step="100" value="800">
+        </div>
+        <div class="form-group">
+          <label>主题</label>
+          <select id="setting-theme">
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <button id="btn-detect-engine" class="btn-secondary">探测系统中引擎</button>
+          <span id="detect-result" class="hidden"></span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-settings-save">保存</button>
+        <button id="btn-settings-cancel" class="btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
