@@ -61,11 +61,20 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --win nsis portable --publish never --config ${{ matrix.variant.config }} --config.directories.output=release/${{ matrix.variant.name }}
 
+      - name: Rename artifacts with variant suffix
+        shell: powershell
+        run: |
+          Get-ChildItem "release/${{ matrix.variant.name }}" -Filter "*.exe" | ForEach-Object {
+            $newName = $_.BaseName + "-${{ matrix.variant.name }}" + $_.Extension
+            Copy-Item $_.FullName "release/$newName"
+            Write-Host "Renamed: $newName"
+          }
+
       - name: Upload artifacts (${{ matrix.variant.name }})
         uses: actions/upload-artifact@v4
         with:
           name: LiveLaTeX-${{ matrix.variant.name }}
-          path: release/${{ matrix.variant.name }}/*.exe
+          path: release/*-${{ matrix.variant.name }}.exe
           if-no-files-found: error
 
   release:
