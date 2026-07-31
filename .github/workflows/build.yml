@@ -1,0 +1,83 @@
+name: Build Windows Releases
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        variant:
+          - name: with-tex
+            config: electron-builder.yml
+          - name: no-tex
+            config: electron-builder-no-tex.yml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Download and extract TinyTeX
+        if: matrix.variant.name == 'with-tex'
+        shell: powershell
+        run: |
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/rstudio/tinytex-releases/releases/latest" -Headers @{ "User-Agent" = "latexlive-build" }
+          $asset = $release.assets | Where-Object { $_.name -match "^TinyTeX-1-windows-.+\.exe$" } | Select-Object -First 1
+          if (-not $asset) { throw "TinyTeX-1 windows asset not found" }
+          Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "tinytex.exe"
+          Write-Host "Extracting..."
+          7z x "tinytex.exe" -o"texlive" -y | Out-Null
+          Remove-Item "tinytex.exe"
+          if (Test-Path "texlive\TinyTeX\bin\windows\xelatex.exe") {
+            Write-Host "TinyTeX extracted OK"
+          } else {
+            throw "TinyTeX extraction failed: xelatex.exe not found"
+          }
+
+      - name: Build app
+        run: npm run build
+
+      - name: Package (${{ matrix.variant.name }})
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --win nsis portable --config ${{ matrix.variant.config }} --config.directories.output=release/${{ matrix.variant.name }}
+
+      - name: Upload artifacts (${{ matrix.variant.name }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveLaTeX-${{ matrix.variant.name }}
+          path: release/${{ matrix.variant.name }}/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            artifacts/*.exe \
+            --repo "${{ github.repository }}" \
+            --generate-notes
