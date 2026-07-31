@@ -2,6 +2,9 @@ appId: com.livelatex.app
 productName: LiveLaTeX
 copyright: Copyright © 2025
 
+# TinyTeX bundle is ~600MB; store avoids the slow maximum-compression 7z pass
+compression: store
+
 directories:
   output: release
   buildResources: assets

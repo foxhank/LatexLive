@@ -59,7 +59,7 @@ jobs:
       - name: Package (${{ matrix.variant.name }})
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --win nsis portable --config ${{ matrix.variant.config }} --config.directories.output=release/${{ matrix.variant.name }}
+        run: npx electron-builder --win nsis portable --publish never --config ${{ matrix.variant.config }} --config.directories.output=release/${{ matrix.variant.name }}
 
       - name: Upload artifacts (${{ matrix.variant.name }})
         uses: actions/upload-artifact@v4
