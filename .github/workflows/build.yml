@@ -40,7 +40,10 @@ jobs:
           $asset = $release.assets | Where-Object { $_.name -match "^TinyTeX-1-windows-.+\.exe$" } | Select-Object -First 1
           if (-not $asset) { throw "TinyTeX-1 windows asset not found" }
           Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "tinytex.exe"
+          curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors -o "tinytex.exe" $asset.browser_download_url
+          if (-not (Test-Path "tinytex.exe") -or (Get-Item "tinytex.exe").Length -lt 1MB) {
+            throw "TinyTeX download failed"
+          }
           Write-Host "Extracting..."
           7z x "tinytex.exe" -o"texlive" -y | Out-Null
           Remove-Item "tinytex.exe"
@@ -77,15 +80,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ github.ref_name }}" \
-            artifacts/*.exe \
-            --repo "${{ github.repository }}" \
-            --generate-notes \
-          || gh release upload "${{ github.ref_name }}" \
-            artifacts/*.exe \
-            --repo "${{ github.repository }}" \
-            --clobber
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.exe
+          generate_release_notes: true
