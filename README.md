@@ -32,8 +32,9 @@ LiveLaTeX 将编辑器与 PDF 预览放在同一窗口：左侧为源码编辑�
 
 ```bash
 npm install
-npm run dev      # 开发模式
-npm run dist     # 打包发布
+npm run setup:tex    # 下载并解压 TinyTeX 编译器（约 300 MB），只需一次
+npm run dev          # 开发模式
+npm run dist         # 打包发布
 ```
 
 ## 许可

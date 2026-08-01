@@ -4,6 +4,7 @@
   "description": "Real-time LaTeX editor with live PDF preview",
   "main": "dist/main/index.js",
   "scripts": {
+    "setup:tex": "node scripts/setup-tex.mjs",
     "build:dev": "node scripts/build.mjs --dev",
     "build": "node scripts/build.mjs",
     "start": "npm run build:dev && electron .",
