@@ -5,6 +5,11 @@ copyright: Copyright © 2025
 # TinyTeX bundle is ~600MB; store avoids the slow maximum-compression 7z pass
 compression: store
 
+# App has no native modules needing an Electron-ABI rebuild (chokidar/electron-store/
+# pdfjs-dist are pure JS on Windows); skip @electron/rebuild so the unused optional
+# `canvas` dep of pdfjs-dist doesn't fail to compile against missing GTK/Cairo.
+npmRebuild: false
+
 directories:
   output: release
   buildResources: assets

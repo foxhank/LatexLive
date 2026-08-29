@@ -18,6 +18,7 @@ const appState = {
   totalPages: 0,
   pdfDoc: null,
   compiling: false,
+  exporting: false,
   compileTimer: null,
   settings: {
     engine: 'xelatex',
@@ -146,10 +147,21 @@ async function loadPdf(pdfPath) {
     const url = URL.createObjectURL(blob);
     const pdfDoc = await pdfjsLib.getDocument(url).promise;
     URL.revokeObjectURL(url);
+    const isNewDoc = !appState.pdfDoc;
     appState.pdfDoc = pdfDoc;
     appState.totalPages = pdfDoc.numPages;
     appState.pageNum = Math.min(appState.pageNum, appState.totalPages);
     pageInfo.textContent = appState.totalPages ? `${appState.pageNum} / ${appState.totalPages}` : '— / —';
+    if (isNewDoc) {
+      // Fit a newly opened document to the panel width (the canvas no longer
+      // auto-shrinks to fit, so 100% could overflow with scrollbars)
+      const page = await pdfDoc.getPage(appState.pageNum);
+      const w = viewerContainer.clientWidth - 16;
+      if (w > 0) {
+        currentScale = w / page.getViewport({ scale: 1 }).width;
+        zoomLevel.textContent = `${Math.round(currentScale * 100)}%`;
+      }
+    }
     await renderPdfPage(pdfDoc, appState.pageNum, currentScale);
     return true;
   } catch (e) {
@@ -162,6 +174,37 @@ async function loadPdf(pdfPath) {
 }
 
 // ─── Compilation ────────────────────────────────────────────────
+
+// Fill the error panel from a compile result (structured errors, or log tail)
+function showResultErrors(result) {
+  errorList.innerHTML = '';
+  document.querySelectorAll('.error-line').forEach(el => el.classList.remove('error-line'));
+  errorPanel.classList.remove('hidden');
+  if (result.errors && result.errors.length > 0) {
+    result.errors.forEach((err) => {
+      const el = document.createElement('div');
+      el.className = 'error-item';
+      el.title = err.line ? `行 ${err.line}: ${err.message}` : err.message;
+      el.textContent = err.line ? `行 ${err.line}: ${err.message}` : err.message;
+      el.addEventListener('click', () => { if (err.line) scrollEditorToLine(err.line); });
+      errorList.appendChild(el);
+    });
+  } else if (result.log) {
+    const lines = result.log.split('\n').filter(l => l.trim()).slice(-15);
+    lines.forEach(line => {
+      const el = document.createElement('div');
+      el.className = 'error-item';
+      el.textContent = line.slice(0, 120);
+      el.title = line;
+      errorList.appendChild(el);
+    });
+  } else {
+    const el = document.createElement('div');
+    el.className = 'error-item';
+    el.textContent = '编译工具无输出，请检查设置中的编译器路径';
+    errorList.appendChild(el);
+  }
+}
 
 async function runCompile() {
   if (appState.compiling || !appState.currentFilePath) return;
@@ -190,15 +233,7 @@ async function runCompile() {
       compileStatus.textContent = '编译错误';
       compileStatus.className = 'status-error';
       compileStatus.title = `${result.errors.length} 个错误`;
-      errorPanel.classList.remove('hidden');
-      result.errors.forEach((err) => {
-        const el = document.createElement('div');
-        el.className = 'error-item';
-        el.title = `行 ${err.line || '?'}: ${err.message}`;
-        el.textContent = err.line ? `行 ${err.line}: ${err.message}` : err.message;
-        el.addEventListener('click', () => { if (err.line) scrollEditorToLine(err.line); });
-        errorList.appendChild(el);
-      });
+      showResultErrors(result);
     } else if (result.success) {
       compileStatus.textContent = '编译成功 ✓';
       compileStatus.className = 'status-success';
@@ -213,23 +248,7 @@ async function runCompile() {
       compileStatus.textContent = '编译失败';
       compileStatus.className = 'status-error';
       compileStatus.title = '编译失败，查看下方错误日志';
-      errorPanel.classList.remove('hidden');
-      errorList.innerHTML = '';
-      if (result.log) {
-        const lines = result.log.split('\n').filter(l => l.trim()).slice(-15);
-        lines.forEach(line => {
-          const el = document.createElement('div');
-          el.className = 'error-item';
-          el.textContent = line.slice(0, 120);
-          el.title = line;
-          errorList.appendChild(el);
-        });
-      } else {
-        const el = document.createElement('div');
-        el.className = 'error-item';
-        el.textContent = '编译工具无输出，请检查设置中的编译器路径';
-        errorList.appendChild(el);
-      }
+      showResultErrors(result);
     }
   } catch (e) {
     clearInterval(timerInterval);
@@ -264,6 +283,57 @@ function manualCompile() {
   runCompile();
 }
 
+// Full compile (all passes + bibliography) → save the PDF to a user-chosen location
+async function exportPdf() {
+  if (!appState.currentFilePath) {
+    compileStatus.textContent = '请先打开 .tex 文件';
+    compileStatus.className = 'status-error';
+    return;
+  }
+  if (appState.compiling || appState.exporting) return;
+  appState.exporting = true;
+  $('btn-export').disabled = true;
+
+  compileStatus.textContent = '全量编译中...';
+  compileStatus.className = 'status-running';
+  compileTimer.textContent = '';
+  compileTimer.classList.remove('hidden');
+  const startTime = Date.now();
+  const timerInterval = setInterval(() => {
+    compileTimer.textContent = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+  }, 100);
+
+  try {
+    const result = await window.api.compiler.export(appState.currentFilePath, editor.state.doc.toString());
+    clearInterval(timerInterval);
+    compileTimer.textContent = `${(result.elapsed / 1000).toFixed(1)}s`;
+
+    if (result.savedPath) {
+      compileStatus.textContent = '已导出 ✓';
+      compileStatus.className = 'status-success';
+      compileStatus.title = result.savedPath;
+      errorPanel.classList.add('hidden');
+    } else if (result.canceled) {
+      compileStatus.textContent = '编译成功 ✓ (未保存)';
+      compileStatus.className = 'status-success';
+      compileStatus.title = '已取消保存，PDF 仍在预览中';
+    } else {
+      compileStatus.textContent = '导出失败';
+      compileStatus.className = 'status-error';
+      showResultErrors(result);
+    }
+  } catch (e) {
+    clearInterval(timerInterval);
+    compileStatus.textContent = '导出异常';
+    compileStatus.className = 'status-error';
+    compileStatus.title = e?.message || String(e);
+    showResultErrors({ errors: [{ message: `系统错误: ${e?.message || e}`, line: null }], log: '' });
+    console.error('[LiveLaTeX] Export exception:', e);
+  }
+  $('btn-export').disabled = false;
+  appState.exporting = false;
+}
+
 // ─── File Operations ────────────────────────────────────────────
 
 async function newFile() {
@@ -273,6 +343,7 @@ async function newFile() {
   currentFileEl.textContent = '未命名';
   errorPanel.classList.add('hidden');
   await window.api.watcher.unwatch();
+  await window.api.watcher.unwatchSource();
   appState.pdfDoc = null;
   appState.totalPages = 0;
   pageInfo.textContent = '— / —';
@@ -289,6 +360,7 @@ async function openFile() {
     setEditorContent(result.content);
     filePathEl.textContent = result.filePath;
     currentFileEl.textContent = result.filePath.split(/[/\\]/).pop();
+    window.api.watcher.watchSource(result.filePath);
     errorPanel.classList.add('hidden');
     runCompile();
   } catch (err) {
@@ -318,6 +390,7 @@ async function saveAsFile() {
     appState.currentFilePath = result.filePath;
     filePathEl.textContent = result.filePath;
     currentFileEl.textContent = result.filePath.split(/[/\\]/).pop();
+    window.api.watcher.watchSource(result.filePath);
     appState.modified = false;
     updateModified();
   }
@@ -402,6 +475,7 @@ function setupListeners() {
   $('btn-save').addEventListener('click', saveFile);
   $('btn-save-as').addEventListener('click', saveAsFile);
   $('btn-compile').addEventListener('click', manualCompile);
+  $('btn-export').addEventListener('click', exportPdf);
   synctexBtn.addEventListener('click', toggleSynctex);
 
   // Zoom
@@ -531,6 +605,17 @@ function setupListeners() {
     }
   });
 
+  // External source change (e.g. AI agent edits the file on disk)
+  window.api.on('source:changed', (payload) => {
+    if (!appState.currentFilePath) return;
+    const incoming = payload?.content ?? '';
+    if (incoming !== editor.state.doc.toString()) {
+      setEditorContent(incoming);
+    } else {
+      scheduleCompile();
+    }
+  });
+
   // Package install progress
   window.api.on('compile:progress', (msg) => {
     compileStatus.textContent = msg || '';
@@ -562,6 +647,7 @@ async function init() {
       setEditorContent(result.content);
       filePathEl.textContent = result.filePath;
       currentFileEl.textContent = result.filePath.split(/[/\\]/).pop();
+      window.api.watcher.watchSource(result.filePath);
       runCompile();
       return;
     }

@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
     detect: () => ipcRenderer.invoke('compiler:detect'),
     run: (filePath) => ipcRenderer.invoke('compile:run', filePath),
     preview: (filePath, content) => ipcRenderer.invoke('compile:preview', filePath, content),
+    export: (filePath, content) => ipcRenderer.invoke('compile:export', filePath, content),
     getPdfPath: (filePath) => ipcRenderer.invoke('compile:get-pdf-path', filePath),
     getLog: (filePath) => ipcRenderer.invoke('compile:get-log', filePath),
   },
@@ -32,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   watcher: {
     watchPdf: (pdfPath) => ipcRenderer.invoke('watcher:watch-pdf', pdfPath),
     unwatch: () => ipcRenderer.invoke('watcher:unwatch'),
+    watchSource: (filePath) => ipcRenderer.invoke('watcher:watch-source', filePath),
+    unwatchSource: () => ipcRenderer.invoke('watcher:unwatch-source'),
   },
 
   app: {
@@ -40,7 +43,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   on: (channel, callback) => {
-    const validChannels = ['pdf:updated', 'compile:progress', 'app:before-quit'];
+    const validChannels = ['pdf:updated', 'compile:progress', 'app:before-quit', 'source:changed'];
     if (validChannels.includes(channel)) {
       const sub = (_event, ...args) => callback(...args);
       ipcRenderer.on(channel, sub);

@@ -2,6 +2,8 @@ appId: com.livelatex.app
 productName: LiveLaTeX
 copyright: Copyright © 2025
 
+npmRebuild: false
+
 directories:
   output: release
   buildResources: assets

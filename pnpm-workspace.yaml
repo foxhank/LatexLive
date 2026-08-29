@@ -1,0 +1,5 @@
+allowBuilds:
+  canvas: true
+  electron: true
+  esbuild: true
+  leveldown: set this to true or false
