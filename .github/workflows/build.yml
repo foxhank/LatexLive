@@ -1,4 +1,4 @@
-name: Build Windows Releases
+name: Build Windows Release
 
 on:
   push:
@@ -12,13 +12,6 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        variant:
-          - name: with-tex
-            config: .github/electron-builder/with-tex.yml
-          - name: no-tex
-            config: .github/electron-builder/no-tex.yml
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,7 +26,6 @@ jobs:
         run: npm install
 
       - name: Download and extract TinyTeX
-        if: matrix.variant.name == 'with-tex'
         shell: powershell
         run: |
           $release = Invoke-RestMethod -Uri "https://api.github.com/repos/rstudio/tinytex-releases/releases/latest" -Headers @{ "User-Agent" = "latexlive-build" }
@@ -56,25 +48,19 @@ jobs:
       - name: Build app
         run: npm run build
 
-      - name: Package (${{ matrix.variant.name }})
+      # Single distributable: a plain zip of win-unpacked — users extract and
+      # run LiveLaTeX.exe directly, no installer. TinyTeX ships along in
+      # extraResources so the app compiles out of the box.
+      - name: Package
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --win nsis portable --publish never --config ${{ matrix.variant.config }} --config.directories.output=release/${{ matrix.variant.name }}
+        run: npx electron-builder --win zip --publish never --config .github/electron-builder/with-tex.yml
 
-      - name: Rename artifacts with variant suffix
-        shell: powershell
-        run: |
-          Get-ChildItem "release/${{ matrix.variant.name }}" -Filter "*.exe" | ForEach-Object {
-            $newName = $_.BaseName + "-${{ matrix.variant.name }}" + $_.Extension
-            Copy-Item $_.FullName "release/$newName"
-            Write-Host "Renamed: $newName"
-          }
-
-      - name: Upload artifacts (${{ matrix.variant.name }})
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LiveLaTeX-${{ matrix.variant.name }}
-          path: release/*-${{ matrix.variant.name }}.exe
+          name: LiveLaTeX-win64
+          path: release/*.zip
           if-no-files-found: error
 
   release:
@@ -91,5 +77,5 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.exe
+          files: artifacts/**/*.zip
           generate_release_notes: true

@@ -1,6 +1,6 @@
 {
   "name": "livelatex",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "Real-time LaTeX editor with live PDF preview",
   "main": "dist/main/index.js",
   "scripts": {
@@ -9,9 +9,8 @@
     "build": "node scripts/build.mjs",
     "start": "npm run build:dev && electron .",
     "dev": "npm run build:dev && electron . --dev",
-    "dist:portable": "npm run build && electron-builder --win portable --config .github/electron-builder/with-tex.yml",
-    "dist:nsis": "npm run build && electron-builder --win nsis --config .github/electron-builder/with-tex.yml",
-    "dist": "npm run build && electron-builder --win --config .github/electron-builder/with-tex.yml"
+    "dist:zip": "npm run build && electron-builder --win zip --config .github/electron-builder/with-tex.yml",
+    "dist": "npm run dist:zip"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

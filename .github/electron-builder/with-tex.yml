@@ -2,8 +2,9 @@ appId: com.livelatex.app
 productName: LiveLaTeX
 copyright: Copyright © 2025
 
-# TinyTeX bundle is ~600MB; store avoids the slow maximum-compression 7z pass
-compression: store
+# TinyTeX unpacks to ~600MB; default (deflate) compression brings the zip
+# down to roughly 200MB, which is what users actually download.
+compression: normal
 
 # App has no native modules needing an Electron-ABI rebuild (chokidar/electron-store/
 # pdfjs-dist are pure JS on Windows); skip @electron/rebuild so the unused optional
@@ -39,24 +40,10 @@ asarUnpack:
 
 win:
   target:
-    - target: portable
+    - target: zip
       arch:
         - x64
-    - target: nsis
-      arch:
-        - x64
-
-nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
-  createDesktopShortcut: true
-  createStartMenuShortcut: true
-  shortcutName: LiveLaTeX
-  artifactName: LiveLaTeX-Setup-${version}.${ext}
-
-portable:
-  artifactName: LiveLaTeX-Portable-${version}.${ext}
-  requestExecutionLevel: user
+  artifactName: LiveLaTeX-win64-${version}.${ext}
 
 extraMetadata:
   main: dist/main/index.js
