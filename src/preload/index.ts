@@ -42,8 +42,18 @@ contextBridge.exposeInMainWorld('api', {
     getPath: (name) => ipcRenderer.invoke('app:get-path', name),
   },
 
+  collab: {
+    startHost: (filePath, content, name) => ipcRenderer.invoke('collab:start-host', filePath, content, name),
+    join: (args) => ipcRenderer.invoke('collab:join', args),
+    leave: () => ipcRenderer.invoke('collab:leave'),
+    publish: (paths) => ipcRenderer.invoke('collab:publish', paths),
+    roomsNow: () => ipcRenderer.invoke('collab:rooms-now'),
+    state: () => ipcRenderer.invoke('collab:state'),
+  },
+
   on: (channel, callback) => {
-    const validChannels = ['pdf:updated', 'compile:progress', 'app:before-quit', 'source:changed'];
+    const validChannels = ['pdf:updated', 'compile:progress', 'app:before-quit', 'source:changed',
+      'collab:rooms', 'collab:peers', 'collab:status', 'collab:closed'];
     if (validChannels.includes(channel)) {
       const sub = (_event, ...args) => callback(...args);
       ipcRenderer.on(channel, sub);

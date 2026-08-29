@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' blob:; worker-src 'self' blob:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' ws: wss: blob:; worker-src 'self' blob:;">
   <title>LiveLaTeX</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -14,6 +14,7 @@
         <span id="app-title">LiveLaTeX</span>
         <span id="file-path"></span>
         <span id="modified-indicator"></span>
+        <span id="collab-chip" class="hidden"></span>
       </div>
       <div id="titlebar-center">
         <button id="btn-compile" title="手动编译 (Ctrl+Enter)">▶ <span class="shortcut-hint">编译</span></button>
@@ -23,6 +24,7 @@
         <span id="compile-timer" class="hidden"></span>
       </div>
       <div id="titlebar-right">
+        <button id="btn-collab" title="局域网多人协作">👥 <span class="shortcut-hint">协作</span></button>
         <button id="btn-settings" title="设置">⚙</button>
       </div>
     </div>
@@ -113,6 +115,51 @@
       <div class="modal-footer">
         <button id="btn-settings-save">保存</button>
         <button id="btn-settings-cancel" class="btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Collab Modal -->
+  <div id="collab-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>局域网协作</h2>
+        <button id="collab-close" class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>你的名字（队友会看到）</label>
+          <input type="text" id="collab-name" placeholder="例如：小明" maxlength="32">
+        </div>
+        <div id="collab-idle-view">
+          <div class="form-group">
+            <label>① 创建房间（共享当前打开的文档，你是主持人）</label>
+            <button id="btn-collab-host" class="btn-secondary">🏠 创建房间</button>
+          </div>
+          <div class="form-group">
+            <label>② 加入房间 — 局域网发现的房间</label>
+            <div id="collab-rooms" class="collab-rooms">
+              <div class="collab-empty">正在扫描局域网…</div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>或手动加入（扫描不到时，输入主持人的 IP:端口）</label>
+            <div class="input-with-button">
+              <input type="text" id="collab-manual" placeholder="192.168.1.23:48712">
+              <button id="btn-collab-manual">加入</button>
+            </div>
+          </div>
+        </div>
+        <div id="collab-active-view" class="hidden">
+          <div class="collab-room-banner" id="collab-room-info"></div>
+          <div class="form-group">
+            <label>当前成员</label>
+            <div id="collab-peers" class="collab-peers"></div>
+          </div>
+          <button id="btn-collab-leave" class="btn-secondary">退出协作（内容保留在本机）</button>
+        </div>
+        <div id="collab-msg" class="collab-msg"></div>
       </div>
     </div>
   </div>

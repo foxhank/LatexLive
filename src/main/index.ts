@@ -63,6 +63,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  shutdownCollab();
 });
 
 app.on('window-all-closed', () => {
@@ -905,3 +906,14 @@ ipcMain.handle('app:quit', () => {
 });
 
 ipcMain.handle('app:get-path', (_e, name) => app.getPath(name));
+
+// ─── LAN collaboration ──────────────────────────────────────────
+
+const { initCollab } = require('./collab');
+initCollab({
+  getWin: () => mainWindow,
+  // The CRDT autosave writes the same file Ctrl+S does — feed the watcher's
+  // echo suppression so remote edits don't bounce back as "external changes".
+  setLastSaved: (content) => { lastSavedMainContent = content; },
+  store,
+});

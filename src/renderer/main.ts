@@ -3,6 +3,7 @@ import { EditorState } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
 import { latex } from 'codemirror-lang-latex';
 import * as pdfjsLib from 'pdfjs-dist';
+import { collab, setupCollab, isCollabActive, getCollabExtensions, getDocContent, flushCollabSave, handleSourceChanged, startHost, joinRoom } from './collab';
 
 // Set worker path — copied from node_modules during build
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
@@ -72,11 +73,14 @@ function createEditor() {
       EditorView.theme({
         '&': { fontFamily: `${appState.settings.editorFont || 'Consolas'}, monospace`, fontSize: `${appState.settings.editorFontSize || 14}px` },
       }),
+      // CRDT binding replaces the plain doc when a collab session is live;
+      // yCollab provides its own undo history + remote cursors/selections
+      ...(isCollabActive() ? getCollabExtensions() : []),
       keymap.of([
-        { key: 'Mod-s', run: () => { saveFile(); return true; } },
-        { key: 'Mod-Shift-s', run: () => { saveAsFile(); return true; } },
-        { key: 'Mod-o', run: () => { openFile(); return true; } },
-        { key: 'Mod-n', run: () => { newFile(); return true; } },
+        { key: 'Mod-s', run: () => { if (isCollabActive()) { flushCollabSave(); compileStatus.textContent = '协作模式自动保存 ✓'; compileStatus.className = 'status-success'; } else saveFile(); return true; } },
+        { key: 'Mod-Shift-s', run: () => { if (!isCollabActive()) saveAsFile(); return true; } },
+        { key: 'Mod-o', run: () => { if (!isCollabActive()) openFile(); return true; } },
+        { key: 'Mod-n', run: () => { if (!isCollabActive()) newFile(); return true; } },
         { key: 'Mod-Enter', run: () => { manualCompile(); return true; } },
       ]),
       // Use standard updateListener instead of custom dispatch override
@@ -95,6 +99,18 @@ function createEditor() {
     state,
     parent: editorContainer,
   });
+}
+
+// Re-entering collab mode swaps the editor between a plain local doc and the
+// CRDT-bound one — recreate from scratch either way.
+function rebuildEditor() {
+  if (editor) editor.destroy();
+  createEditor();
+}
+
+function updatePathUI(filePath) {
+  filePathEl.textContent = filePath;
+  currentFileEl.textContent = filePath.split(/[/\\]/).pop();
 }
 
 function setEditorContent(content) {
@@ -208,6 +224,14 @@ function showResultErrors(result) {
 
 async function runCompile() {
   if (appState.compiling || !appState.currentFilePath) return;
+  // Guest entering a room: editor may still be waiting for the first CRDT
+  // sync — compiling the transient empty doc would just flash error noise.
+  if (isCollabActive() && !collab.syncedOnce) {
+    compileStatus.textContent = '等待内容同步…';
+    compileStatus.className = 'status-running';
+    setTimeout(runCompile, 300);
+    return;
+  }
   appState.compiling = true;
   compileStatus.textContent = '编译中...';
   compileStatus.className = 'status-running';
@@ -337,6 +361,7 @@ async function exportPdf() {
 // ─── File Operations ────────────────────────────────────────────
 
 async function newFile() {
+  if (isCollabActive()) { collabStatusMsg('协作模式下不能新建文件，请先退出协作'); return; }
   appState.currentFilePath = null;
   setEditorContent('');
   filePathEl.textContent = '未命名';
@@ -351,6 +376,7 @@ async function newFile() {
 }
 
 async function openFile() {
+  if (isCollabActive()) { collabStatusMsg('协作模式下不能打开其他文件，请先退出协作'); return; }
   console.log('[LiveLaTeX] openFile called');
   try {
     const result = await window.api.file.open();
@@ -358,8 +384,7 @@ async function openFile() {
     if (!result) return;
     appState.currentFilePath = result.filePath;
     setEditorContent(result.content);
-    filePathEl.textContent = result.filePath;
-    currentFileEl.textContent = result.filePath.split(/[/\\]/).pop();
+    updatePathUI(result.filePath);
     window.api.watcher.watchSource(result.filePath);
     errorPanel.classList.add('hidden');
     runCompile();
@@ -371,6 +396,7 @@ async function openFile() {
 }
 
 async function saveFile() {
+  if (isCollabActive()) { flushCollabSave(); return; }
   const content = editor.state.doc.toString();
   if (appState.currentFilePath) {
     const result = await window.api.file.save(content, appState.currentFilePath);
@@ -384,12 +410,12 @@ async function saveFile() {
 }
 
 async function saveAsFile() {
+  if (isCollabActive()) { collabStatusMsg('协作模式下不能另存，请先退出协作'); return; }
   const content = editor.state.doc.toString();
   const result = await window.api.file.saveAs(content);
   if (result && result.saved) {
     appState.currentFilePath = result.filePath;
-    filePathEl.textContent = result.filePath;
-    currentFileEl.textContent = result.filePath.split(/[/\\]/).pop();
+    updatePathUI(result.filePath);
     window.api.watcher.watchSource(result.filePath);
     appState.modified = false;
     updateModified();
@@ -398,6 +424,11 @@ async function saveAsFile() {
 
 function updateModified() {
   modifiedIndicator.textContent = appState.modified ? '● 未保存' : '';
+}
+
+function collabStatusMsg(msg) {
+  compileStatus.textContent = msg;
+  compileStatus.className = 'status-error';
 }
 
 // ─── SyncTeX ────────────────────────────────────────────────────
@@ -605,9 +636,15 @@ function setupListeners() {
     }
   });
 
-  // External source change (e.g. AI agent edits the file on disk)
+  // External source change (e.g. AI agent edits the file on disk).
+  // In collab mode the editor is CRDT-bound: never push disk content into it —
+  // ship non-main file changes to the room and recompile instead.
   window.api.on('source:changed', (payload) => {
     if (!appState.currentFilePath) return;
+    if (isCollabActive()) {
+      handleSourceChanged(payload);
+      return;
+    }
     const incoming = payload?.content ?? '';
     if (incoming !== editor.state.doc.toString()) {
       setEditorContent(incoming);
@@ -627,6 +664,7 @@ function setupListeners() {
     if (appState.modified && appState.currentFilePath) {
       await window.api.file.save(editor.state.doc.toString(), appState.currentFilePath);
     }
+    if (isCollabActive()) await flushCollabSave().catch(() => {});
     window.api.app.quit();
   });
 }
@@ -639,14 +677,59 @@ async function init() {
   setupListeners();
   zoomLevel.textContent = '100%';
 
+  setupCollab({
+    getAppState: () => appState,
+    getEditorContent: () => editor.state.doc.toString(),
+    rebuildEditor,
+    updatePathUI,
+    updateModified,
+    runCompile,
+    scheduleCompile,
+  });
+
+  // DevTools/automation hook — renderer internals are module-scoped, so tests
+  // (scripts/gui-collab-test.mjs) and console debugging need a small surface.
+  // Must be assigned before the lastFilePath restore below, which returns early.
+  window.__livelatex = {
+    appState,
+    collab,
+    openPathDirect: async (filePath) => {
+      const result = await window.api.file.openPath(filePath);
+      if (!result || isCollabActive()) return result;
+      appState.currentFilePath = result.filePath;
+      setEditorContent(result.content);
+      updatePathUI(result.filePath);
+      window.api.watcher.watchSource(result.filePath);
+      runCompile();
+      return result;
+    },
+    insertText: (text) => {
+      if (!editor) return false;
+      // append at the end — inserting at the (default position-0) cursor would
+      // put raw text before \documentclass and break the next compile
+      editor.dispatch({ changes: { from: editor.state.doc.length, insert: text } });
+      return true;
+    },
+    getDoc: () => editor.state.doc.toString(),
+    collabHost: async () => {
+      $('collab-name').value = '主机A';
+      await startHost();
+      return window.api.collab.state();
+    },
+    collabJoin: async (addr, wsPort) => {
+      $('collab-name').value = '队友B';
+      await joinRoom({ addr, wsPort });
+      return window.api.collab.state();
+    },
+  };
+
   const s = await window.api.settings.get();
   if (s?.lastFilePath) {
     const result = await window.api.file.openPath(s.lastFilePath);
     if (result) {
       appState.currentFilePath = result.filePath;
       setEditorContent(result.content);
-      filePathEl.textContent = result.filePath;
-      currentFileEl.textContent = result.filePath.split(/[/\\]/).pop();
+      updatePathUI(result.filePath);
       window.api.watcher.watchSource(result.filePath);
       runCompile();
       return;

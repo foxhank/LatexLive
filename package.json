@@ -1,20 +1,22 @@
 {
   "name": "livelatex",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Real-time LaTeX editor with live PDF preview",
   "main": "dist/main/index.js",
   "scripts": {
     "setup:tex": "node scripts/setup-tex.mjs",
     "build:dev": "node scripts/build.mjs --dev",
     "build": "node scripts/build.mjs",
+    "test:collab": "node scripts/test-collab.mjs",
+    "test:collab:gui": "node scripts/gui-collab-test.mjs",
     "start": "npm run build:dev && electron .",
     "dev": "npm run build:dev && electron . --dev",
     "dist:zip": "npm run build && electron-builder --win zip --config .github/electron-builder/with-tex.yml",
     "dist": "npm run dist:zip"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
     "7zip-bin": "^5.2.0",
+    "@types/node": "^22.10.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.24.0",
@@ -28,6 +30,12 @@
     "codemirror": "^6.0.1",
     "codemirror-lang-latex": "^0.4.2",
     "electron-store": "^8.2.0",
-    "pdfjs-dist": "^4.8.0"
+    "lib0": "^0.2.117",
+    "pdfjs-dist": "^4.8.0",
+    "ws": "^8.21.3",
+    "y-codemirror.next": "^0.3.6",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^2.1.0",
+    "yjs": "^13.6.32"
   }
 }

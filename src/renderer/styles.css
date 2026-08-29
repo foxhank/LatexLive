@@ -135,3 +135,40 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
 
 /* Hidden */
 .hidden { display: none !important; }
+
+/* ─── Collaboration ─────────────────────────────────────────── */
+
+#collab-chip {
+  margin-left: 8px; padding: 2px 10px; border-radius: 10px;
+  background: var(--accent); color: white; font-size: 12px;
+  cursor: pointer; white-space: nowrap; user-select: none;
+}
+
+#collab-rooms { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+.collab-empty { font-size: 12px; color: var(--text-secondary); padding: 10px; text-align: center; background: var(--bg-secondary); border-radius: 4px; }
+.collab-room-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-secondary);
+}
+.collab-room-row button { padding: 4px 14px; border: none; border-radius: 3px; background: var(--accent); color: white; cursor: pointer; font-size: 12px; }
+.collab-room-row button:hover { background: var(--accent-hover); }
+.collab-room-name { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
+.collab-room-meta { display: block; font-size: 11px; color: var(--text-secondary); }
+
+.collab-room-banner { padding: 10px; background: var(--bg-secondary); border-radius: 4px; font-size: 13px; margin-bottom: 12px; color: var(--text); }
+.collab-peers { display: flex; flex-wrap: wrap; gap: 8px; }
+.collab-peer { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; background: var(--bg-secondary); border-radius: 12px; font-size: 12px; color: var(--text); }
+.collab-peer-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+.collab-msg { margin-top: 12px; font-size: 12px; color: var(--text-secondary); min-height: 16px; word-break: break-all; }
+.collab-msg.collab-msg-error { color: var(--error); }
+
+/* Remote cursors from y-codemirror.next */
+.cm-ySelectionCaret { position: relative; border-left: 1px solid black; margin-left: -1px; box-sizing: border-box; }
+.cm-ySelectionCaretDot { border-radius: 50%; position: absolute; width: 6px; height: 6px; top: -2.5px; left: -3px; background-color: inherit; }
+.cm-ySelectionInfo {
+  position: absolute; top: -1.6em; left: -2px; font-size: 11px; font-family: inherit;
+  line-height: normal; white-space: nowrap; z-index: 101; color: white;
+  padding: 2px 5px; border-radius: 3px 3px 3px 0; opacity: 0; transition: opacity 0.3s ease-in-out;
+}
+.cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }

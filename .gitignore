@@ -36,3 +36,4 @@ test.*
 *.pdf
 PLAN.md
 PLAN.md
+test-dist/
