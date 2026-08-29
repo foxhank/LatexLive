@@ -34,8 +34,18 @@ const WS_PORT_MAX = 48740;
 const BEACON_INTERVAL = 1500;
 const ROOM_TTL = 6000;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
-const ARTIFACT_RE = /\.(pdf|log|aux|out|toc|lof|lot|bbl|blg|fls|fdb_latexmk|synctex\.gz|bcf|run\.xml|xyc|dvi)$/i;
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'build', 'out', 'dist', '.vscode', '__pycache__', 'sync']);
+// The shared folder syncs EVERYTHING the user puts in it — figures/*.pdf
+// included (that was the bug where a teammate's PDF figure never arrived).
+// Compile outputs don't live here: preview compiles run in %TEMP% and export
+// saves through a dialog. Only .git is skipped: two machines rewriting each
+// other's repository state mid-operation is corruption, and the product
+// decision is "no version control" anyway.
+const SKIP_DIRS = new Set(['.git']);
+const GIT_DIR_RE = /(^|[/\\])\.git([/\\]|$)/;
+
+function isSyncSkippedPath(p) {
+  return GIT_DIR_RE.test(String(p).replace(/\\/g, '/'));
+}
 
 // `room` is non-null while a collaboration session is active (either role).
 let room = null;
@@ -64,7 +74,6 @@ function collectProjectFiles(rootDir) {
         if (!SKIP_DIRS.has(ent.name.toLowerCase())) walk(path.join(dir, ent.name));
         continue;
       }
-      if (ARTIFACT_RE.test(ent.name)) continue;
       const abs = path.join(dir, ent.name);
       let st;
       try { st = fs.statSync(abs); } catch { continue; }
@@ -123,7 +132,7 @@ function filterPublishable(paths, baseDir) {
   for (const p of paths || []) {
     if (!p) continue;
     const abs = path.resolve(p);
-    if (ARTIFACT_RE.test(path.basename(abs))) continue;
+    if (isSyncSkippedPath(abs)) continue; // .git never travels
     let content = null;
     let missing = false;
     try {
@@ -625,4 +634,4 @@ function shutdownCollab() {
   stopDiscovery();
 }
 
-module.exports = { initCollab, shutdownCollab };
+module.exports = { initCollab, shutdownCollab, isSyncSkippedPath };

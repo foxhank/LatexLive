@@ -45,12 +45,15 @@ async function main() {
   await new Promise((r) => setTimeout(r, 100));
   await publish([mainPath]);
 
-  // 3b. guest → host asset: drop an image into the mirror
+  // 3b. guest → host asset: drop an image AND a PDF figure (the pdf one is a
+  // regression test — pdf figures used to be wrongly treated as build debris)
   const imgPath = path.join(mirrorDir, 'figs', 'test.png');
   fs.mkdirSync(path.dirname(imgPath), { recursive: true });
   fs.writeFileSync(imgPath, Buffer.from('FAKE-PNG-FROM-GUEST'));
+  const pdfFig = path.join(mirrorDir, 'figs', 'diagram.pdf');
+  fs.writeFileSync(pdfFig, Buffer.from('%PDF-1.4 fake figure'));
   await new Promise((r) => setTimeout(r, 100));
-  await publish([imgPath]);
+  await publish([imgPath, pdfFig]);
 
   // 3c. guest deletes a file → deletion op
   const doomed = path.join(mirrorDir, 'sections', 'intro.tex');

@@ -124,6 +124,7 @@ async function main() {
 
     // ── peers ─────────────────────────────────────────────────
     await waitFor('peers list on A', () => cdpA.evaluate('__livelatex.collab.peers.length >= 2'));
+    await waitFor('peers list on B', () => cdpB.evaluate('__livelatex.collab.peers.length >= 2'), 10000);
     check('B peer list has 2', (await cdpB.evaluate('__livelatex.collab.peers.length')) === 2);
 
     // ── text A → B (autosave → disk → watcher → publish → apply) ──

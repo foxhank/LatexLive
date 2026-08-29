@@ -104,6 +104,8 @@ async function main() {
   check('guest main.tex delete REFUSED on host', fs.existsSync(mainTex) && read(mainTex).includes('% edited-by-host'));
   check('host received guest asset', read(path.join(hostProj, 'figs', 'test.png')) === 'FAKE-PNG-SECOND',
     JSON.stringify(read(path.join(hostProj, 'figs', 'test.png'))));
+  check('host received guest PDF figure (sync-all regression)', read(path.join(hostProj, 'figs', 'diagram.pdf')) === '%PDF-1.4 fake figure',
+    JSON.stringify(read(path.join(hostProj, 'figs', 'diagram.pdf'))));
   check('guest file deletion synced to host', !fs.existsSync(path.join(hostProj, 'sections', 'intro.tex')));
 
   // ── teardown ───────────────────────────────────────────────

@@ -872,7 +872,9 @@ ipcMain.handle('watcher:watch-source', (_e, filePath) => {
   sourceWatcher = chokidar.watch(dir, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
-    ignored: /\.(pdf|log|aux|out|toc|bbl|blg|fls|fdb_latexmk|synctex\.gz)$/i,
+    // Sync everything in the project dir; only .git is off-limits (shared
+    // with the collab sync filter so both layers agree).
+    ignored: (p) => p !== dir && require('./collab').isSyncSkippedPath(p),
   });
 
   const notify = () => {
