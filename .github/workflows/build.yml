@@ -56,7 +56,17 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --win zip --publish never --config .github/electron-builder/with-tex.yml
 
-      - name: Upload artifact
+      # Small app-only bundle (app.asar + unpacked, no TinyTeX) that the
+      # in-app updater downloads so users don't re-download 300MB+ per release.
+      # Entry paths must be resources/-relative: "app.asar", "app.asar.unpacked/…".
+      - name: Package app-only update bundle
+        shell: powershell
+        run: |
+          $ver = (Get-Content package.json | ConvertFrom-Json).version
+          Compress-Archive -Path "release/win-unpacked/resources/app.asar","release/win-unpacked/resources/app.asar.unpacked" -DestinationPath "release/LiveLaTeX-app-$ver.zip" -Force
+          Write-Host "Created LiveLaTeX-app-$ver.zip"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: LiveLaTeX-win64

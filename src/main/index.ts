@@ -854,11 +854,14 @@ ipcMain.handle('watcher:unwatch', () => {
   pdfWatcher = null;
 });
 
-// Source watcher: re-render when an external tool (e.g. AI agent) edits the original file
+// Source watcher: re-render when an external tool (e.g. AI agent) edits the
+// original file; in collab mode it also drives publishing file ops (incl.
+// deletions) to the room.
 let sourceWatcher = null;
 let sourceDebounce = null;
 let lastSavedMainContent = null;
 const pendingSourceChanges = new Set();
+const pendingSourceDeletions = new Set();
 
 ipcMain.handle('watcher:watch-source', (_e, filePath) => {
   if (sourceWatcher) sourceWatcher.close();
@@ -876,19 +879,23 @@ ipcMain.handle('watcher:watch-source', (_e, filePath) => {
     clearTimeout(sourceDebounce);
     sourceDebounce = setTimeout(() => {
       const changes = [...pendingSourceChanges];
+      const deletions = [...pendingSourceDeletions];
       pendingSourceChanges.clear();
+      pendingSourceDeletions.clear();
       let cur = null;
       try { cur = fs.readFileSync(mainFile, 'utf-8'); } catch {}
-      const mainChanged = changes.some((c) => path.resolve(c) === path.resolve(mainFile));
-      // Ignore our own Ctrl+S write (echo), so we don't loop save→reload→compile.
-      if (mainChanged && cur === lastSavedMainContent) return;
+      const mainChanged = [...changes, ...deletions].some((c) => path.resolve(c) === path.resolve(mainFile));
+      // Ignore our own Ctrl+S / autosave write (echo), so we don't loop
+      // save→reload→compile. A deletion of the main file must still surface.
+      if (mainChanged && cur === lastSavedMainContent && !deletions.length) return;
       lastSavedMainContent = cur;
-      mainWindow?.webContents.send('source:changed', { content: cur, changedPaths: changes });
+      mainWindow?.webContents.send('source:changed', { content: cur, changedPaths: changes, deletedPaths: deletions });
     }, 250);
   };
 
   const onFileChange = (p) => { pendingSourceChanges.add(p); notify(); };
-  sourceWatcher.on('add', onFileChange).on('change', onFileChange);
+  const onFileDelete = (p) => { pendingSourceDeletions.add(p); pendingSourceChanges.delete(p); notify(); };
+  sourceWatcher.on('add', onFileChange).on('change', onFileChange).on('unlink', onFileDelete);
 });
 
 ipcMain.handle('watcher:unwatch-source', () => {
@@ -912,8 +919,15 @@ ipcMain.handle('app:get-path', (_e, name) => app.getPath(name));
 const { initCollab } = require('./collab');
 initCollab({
   getWin: () => mainWindow,
-  // The CRDT autosave writes the same file Ctrl+S does — feed the watcher's
-  // echo suppression so remote edits don't bounce back as "external changes".
+  // Collaborative autosave writes the same file Ctrl+S does — feed the
+  // watcher's echo suppression so remote edits don't bounce back as
+  // "external changes".
   setLastSaved: (content) => { lastSavedMainContent = content; },
   store,
 });
+
+// ─── Self-update ────────────────────────────────────────────────
+
+const { initUpdate, startupCheck } = require('./update');
+initUpdate({ getWin: () => mainWindow });
+startupCheck();

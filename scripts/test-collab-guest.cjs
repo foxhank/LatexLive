@@ -1,10 +1,10 @@
 // Guest-side test process. Spawned by test-collab.mjs.
-// Joins the host's room through the REAL collab:join handler, verifies the
-// project mirror, exchanges assets both ways, joins the CRDT room as a second
-// editor, and reports results as JSON on stdout.
+// Joins the host's room through the REAL collab:join handler, then acts like
+// a user + an external AI tool working inside the local mirror: edits the
+// main tex directly on disk, drops an image in, deletes a file — all synced
+// through the real watcher→publish path. Reports results as JSON on stdout.
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 
 const HOST_PORT = Number(process.env.HOST_PORT);
 const ROOM_ID = process.env.ROOM_ID;
@@ -30,54 +30,63 @@ async function main() {
   const join = await handlers.get('collab:join')(null, { addr: '127.0.0.1', wsPort: HOST_PORT, name: '队友B' });
   out.joinOk = join.ok;
   if (!join.ok) { out.joinError = join.error; return finish(out); }
-  const mirrorDir = path.dirname(join.filePath);
-  out.mirrorMainTex = fs.readFileSync(join.filePath, 'utf-8');
+  const mirrorDir = join.projectDir;
+  const mainPath = join.filePath;
+  out.mirrorMainTex = fs.readFileSync(mainPath, 'utf-8');
   out.mirrorHasSub = fs.existsSync(path.join(mirrorDir, 'sections', 'intro.tex'));
 
-  // 3. guest → host asset: create an image in the mirror, publish it
+  // 3. simulate the renderer watcher: publish every path the "user" touches.
+  // (The real renderer calls collab:publish from source:changed events; here
+  // we drive the same IPC handler directly.)
+  const publish = async (paths) => handlers.get('collab:publish')(null, paths);
+
+  // 3a. external edit of the main tex (e.g. Claude Code) → must reach the host
+  fs.appendFileSync(mainPath, '\n% edited-by-agent-B\n');
+  await new Promise((r) => setTimeout(r, 100));
+  await publish([mainPath]);
+
+  // 3b. guest → host asset: drop an image into the mirror
   const imgPath = path.join(mirrorDir, 'figs', 'test.png');
   fs.mkdirSync(path.dirname(imgPath), { recursive: true });
   fs.writeFileSync(imgPath, Buffer.from('FAKE-PNG-FROM-GUEST'));
-  await new Promise((r) => setTimeout(r, 100)); // let watcher-echo timestamps settle
-  await handlers.get('collab:publish')(null, [imgPath]);
+  await new Promise((r) => setTimeout(r, 100));
+  await publish([imgPath]);
 
-  // 4. join the CRDT room as editor B
-  const { WebsocketProvider } = require('y-websocket');
-  const Y = require('yjs');
-  const ydoc = new Y.Doc();
-  const provider = new WebsocketProvider(`ws://127.0.0.1:${HOST_PORT}`, ROOM_ID, ydoc);
-  await new Promise((resolve) => {
-    if (provider.synced) return resolve();
-    provider.on('sync', (s) => s && resolve());
-  });
-  const text = ydoc.getText('content');
-  out.initialTextLength = text.length;
+  // 3c. guest deletes a file → deletion op
+  const doomed = path.join(mirrorDir, 'sections', 'intro.tex');
+  fs.rmSync(doomed);
+  await new Promise((r) => setTimeout(r, 100));
+  await publish([doomed]);
 
-  // signal the parent that join+publish are done — it can now send assets
-  // and edits that this process must observe
   console.log('===GUEST_JOINED===');
 
-  // 5. wait for host's asset (b.txt) to arrive in the mirror
+  // 4. wait for host's asset + host's external main.tex edit to arrive
   const t1 = Date.now();
-  out.hostAssetReceived = false;
-  while (Date.now() - t1 < 8000) {
-    if (fs.existsSync(path.join(mirrorDir, 'from-host.txt'))) { out.hostAssetReceived = true; break; }
+  while (Date.now() - t1 < 10000) {
+    const hasAsset = fs.existsSync(path.join(mirrorDir, 'from-host.txt'));
+    const hasHostEdit = fs.readFileSync(mainPath, 'utf-8').includes('% edited-by-host');
+    if (hasAsset && hasHostEdit) break;
     await new Promise((r) => setTimeout(r, 300));
   }
+  out.hostAssetReceived = fs.existsSync(path.join(mirrorDir, 'from-host.txt'));
+  out.hostTexEditArrived = fs.readFileSync(mainPath, 'utf-8').includes('% edited-by-host');
+  out.mainTexStillExists = fs.existsSync(mainPath);
 
-  // 6. concurrent edit: B types at position 0, then appends own marker
-  text.insert(0, '[B]');
-  text.insert(text.length, '[B-END]');
-
-  // 7. wait for A's marker to arrive, then report final text
+  // 5. main tex deletion must be refused (never destroy the host's real file)
+  fs.rmSync(mainPath);
+  await new Promise((r) => setTimeout(r, 100));
+  await publish([mainPath]);
+  // host should NOT have lost its main.tex — and on the guest side the room
+  // still works. Verify by re-publishing a trivial asset afterwards.
+  fs.writeFileSync(imgPath, Buffer.from('FAKE-PNG-SECOND'));
+  await new Promise((r) => setTimeout(r, 100));
+  await publish([imgPath]);
   const t2 = Date.now();
-  while (Date.now() - t2 < 8000) {
-    if (text.toString().includes('[A]')) break;
-    await new Promise((r) => setTimeout(r, 200));
+  out.secondPublishWorked = false;
+  while (Date.now() - t2 < 6000) {
+    if (fs.readFileSync(path.join(mirrorDir, 'from-host.txt'), 'utf-8').includes('v2')) { out.secondPublishWorked = true; break; }
+    await new Promise((r) => setTimeout(r, 300));
   }
-  out.finalText = text.toString();
-  out.awarenessPeers = [...provider.awareness.getStates().values()]
-    .map((s) => s.user && s.user.name).filter(Boolean);
 
   finish(out);
 

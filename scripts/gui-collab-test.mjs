@@ -120,25 +120,26 @@ async function main() {
     const joinState = await cdpB.evaluate(`__livelatex.collabJoin('127.0.0.1', ${hostState.wsPort})`);
     check('B joins room', joinState && joinState.active && joinState.role === 'guest', JSON.stringify(joinState));
 
-    await waitFor('B synced', () => cdpB.evaluate('__livelatex.collab.syncedOnce'));
     check('B sees A content', (await cdpB.evaluate('__livelatex.getDoc()')).includes('GUI协作测试'));
 
     // ── peers ─────────────────────────────────────────────────
     await waitFor('peers list on A', () => cdpA.evaluate('__livelatex.collab.peers.length >= 2'));
     check('B peer list has 2', (await cdpB.evaluate('__livelatex.collab.peers.length')) === 2);
 
-    // ── text A → B ───────────────────────────────────────────
+    // ── text A → B (autosave → disk → watcher → publish → apply) ──
     await cdpA.evaluate(`__livelatex.insertText('ABC主机')`);
-    await waitFor('B receives A edit', () => cdpB.evaluate('__livelatex.getDoc().includes("ABC主机")'));
+    await waitFor('B receives A edit', () => cdpB.evaluate('__livelatex.getDoc().includes("ABC主机")'), 30000);
     // ── text B → A ───────────────────────────────────────────
     await cdpB.evaluate(`__livelatex.insertText('XYZ队友')`);
-    await waitFor('A receives B edit', () => cdpA.evaluate('__livelatex.getDoc().includes("XYZ队友")'));
+    await waitFor('A receives B edit', () => cdpA.evaluate('__livelatex.getDoc().includes("XYZ队友")'), 30000);
 
     // ── asset: drop an image into A's project, B's mirror gets it ──
     fs.mkdirSync(path.join(proj, 'figs'), { recursive: true });
     fs.writeFileSync(path.join(proj, 'figs', 'pic.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
     const bMirror = await cdpB.evaluate('__livelatex.collab.localPath');
     check('B mirror path set', !!bMirror, bMirror || '');
+    const bDir = await cdpB.evaluate('__livelatex.collab.projectDir');
+    check('B shared-folder path set', !!bDir && fs.existsSync(bDir), bDir || '');
     await waitFor('asset reaches B mirror', () =>
       Promise.resolve(fs.existsSync(path.join(path.dirname(bMirror), 'figs', 'pic.png'))), 15000);
 

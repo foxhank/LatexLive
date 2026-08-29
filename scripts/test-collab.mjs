@@ -1,13 +1,13 @@
-// LAN collaboration protocol test — headless, two processes.
+// LAN collaboration (shared-folder model) protocol test — headless, two processes.
 //
-//   this process  = HOST: real collab module (electron stubbed) + a y-websocket
-//                   client playing the host renderer's editor (client A)
-//   child process = GUEST: real collab module (join/mirror/assets) + its own
-//                   y-websocket client playing the guest renderer (client B)
+//   this process  = HOST: real collab module (electron stubbed); also plays
+//                   the host renderer by invoking collab:publish after touching files
+//   child process = GUEST: real collab module (join/mirror/assets), acting as
+//                   user + external AI tool editing the local mirror
 //
-// Verifies: UDP discovery, join+snapshot mirror, guest→host asset,
-// host→guest asset, CRDT convergence under concurrent edits, awareness,
-// and clean teardown. Exits 0 only if every assertion holds.
+// Verifies: UDP discovery, join+snapshot mirror, guest external main.tex edit →
+// host, host main.tex edit → guest, assets both ways, deletion sync, main.tex
+// delete protection, and clean teardown. Exits 0 only if every assertion holds.
 import { build } from 'esbuild';
 import { createRequire } from 'module';
 import { spawn } from 'child_process';
@@ -26,6 +26,7 @@ const check = (name, cond, extra = '') => {
   if (!cond) failures++;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const read = (p) => { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } };
 
 async function main() {
   // Bundle the real collab module with electron aliased to the stub
@@ -52,17 +53,7 @@ async function main() {
   const hostRes = await handlers.get('collab:start-host')(null, mainTex, fs.readFileSync(mainTex, 'utf-8'), '主持人A');
   check('start-host ok', hostRes.ok, JSON.stringify(hostRes).slice(0, 120));
   if (!hostRes.ok) process.exit(1);
-
-  // Client A — simulates the host renderer (y-websocket + awareness)
-  const { WebsocketProvider } = require('y-websocket');
-  const Y = require('yjs');
-  const ydocA = new Y.Doc();
-  const provA = new WebsocketProvider(`ws://127.0.0.1:${hostRes.wsPort}`, hostRes.roomId, ydocA);
-  await new Promise((res) => { if (provA.synced) res(); else provA.on('sync', (s) => s && res()); });
-  check('client A synced', provA.synced);
-  const textA = ydocA.getText('content');
-  check('client A sees seeded content', textA.toString().includes('协作测试'));
-  provA.awareness.setLocalStateField('user', { name: 'A', color: '#123456', colorLight: '#12345633' });
+  check('start-host flushed editor content to disk', read(mainTex).includes('协作测试'));
 
   // ── GUEST process ──────────────────────────────────────────
   const child = spawn(process.execPath, [path.join(__dirname, 'test-collab-guest.cjs')], {
@@ -73,20 +64,24 @@ async function main() {
   child.stdout.on('data', (d) => { guestOut += d; });
   child.stderr.on('data', (d) => process.stdout.write(`[guest] ${d}`));
 
-  // Wait until the guest has joined + published its own asset, then interact
+  // Wait until the guest joined and pushed its own changes, then interact
   await new Promise((resolve) => {
     const tick = () => (guestOut.includes('===GUEST_JOINED===') ? resolve() : setTimeout(tick, 100));
     tick();
   });
 
-  // ── host → guest asset ─────────────────────────────────────
-  const hostAsset = path.join(hostProj, 'from-host.txt');
-  fs.writeFileSync(hostAsset, 'hello from host');
+  // ── host → guest: asset + external main.tex edit ───────────
+  fs.writeFileSync(path.join(hostProj, 'from-host.txt'), 'hello v1');
+  fs.appendFileSync(mainTex, '\n% edited-by-host\n');
   await sleep(100);
-  await handlers.get('collab:publish')(null, [hostAsset]);
+  await handlers.get('collab:publish')(null, [path.join(hostProj, 'from-host.txt'), mainTex]);
 
-  // ── concurrent CRDT edits (A while B is live) ──────────────
-  textA.insert(0, '[A]');
+  // Guest needs a moment to observe both, then attempts a main.tex delete +
+  // a second image publish. Give it 3s before pushing the v2 asset it waits for.
+  await sleep(3000);
+  fs.writeFileSync(path.join(hostProj, 'from-host.txt'), 'hello v2');
+  await sleep(100);
+  await handlers.get('collab:publish')(null, [path.join(hostProj, 'from-host.txt')]);
 
   const guest = await new Promise((resolve) => {
     child.on('exit', () => {
@@ -95,25 +90,21 @@ async function main() {
     });
   });
 
+  // ── guest-side assertions ──────────────────────────────────
   check('guest discovered room via UDP', guest.discovered);
   check('guest join ok', guest.joinOk, guest.joinError || '');
   check('guest mirror has main.tex', (guest.mirrorMainTex || '').includes('协作测试'));
   check('guest mirror has subfile', guest.mirrorHasSub);
-
-  // host should now see the room still active with itself as host
-  const state = await handlers.get('collab:state')(null);
-  check('host room active', state.active && state.role === 'host');
-
   check('guest received host asset', guest.hostAssetReceived);
-  check('host received guest asset', fs.existsSync(path.join(hostProj, 'figs', 'test.png'))
-    && fs.readFileSync(path.join(hostProj, 'figs', 'test.png'), 'utf-8').includes('FAKE-PNG-FROM-GUEST'));
+  check('guest received host main.tex edit', guest.hostTexEditArrived);
+  check('room alive after main-tex delete attempt (v2 asset arrived)', guest.secondPublishWorked);
 
-  // ── concurrent CRDT edits ──────────────────────────────────
-  const t0 = Date.now();
-  while (Date.now() - t0 < 8000 && !textA.toString().includes('[B]')) await sleep(200);
-  check('concurrent inserts merged on A', textA.toString().includes('[A]') && textA.toString().includes('[B]'), JSON.stringify(textA.toString()));
-  check('guest final text converged', guest.finalText === textA.toString(), JSON.stringify(guest.finalText || ''));
-  check('awareness: guest sees host user', (guest.awarenessPeers || []).includes('A'));
+  // ── host-side assertions ───────────────────────────────────
+  check('host received guest external main.tex edit', read(mainTex).includes('% edited-by-agent-B'), JSON.stringify(read(mainTex)));
+  check('guest main.tex delete REFUSED on host', fs.existsSync(mainTex) && read(mainTex).includes('% edited-by-host'));
+  check('host received guest asset', read(path.join(hostProj, 'figs', 'test.png')) === 'FAKE-PNG-SECOND',
+    JSON.stringify(read(path.join(hostProj, 'figs', 'test.png'))));
+  check('guest file deletion synced to host', !fs.existsSync(path.join(hostProj, 'sections', 'intro.tex')));
 
   // ── teardown ───────────────────────────────────────────────
   const leave = await handlers.get('collab:leave')(null);

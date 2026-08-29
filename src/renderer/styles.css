@@ -172,3 +172,14 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
   padding: 2px 5px; border-radius: 3px 3px 3px 0; opacity: 0; transition: opacity 0.3s ease-in-out;
 }
 .cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }
+
+.collab-path-row { display: flex; align-items: center; gap: 6px; }
+.collab-path {
+  flex: 1; font-size: 11px; padding: 5px 8px; background: var(--bg-secondary);
+  border-radius: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.collab-path-row button { padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+
+#btn-install-update { margin-top: 6px; width: 100%; padding: 8px; border: none; border-radius: 3px; background: var(--success, #2da44e); color: white; cursor: pointer; font-size: 13px; }
+#btn-install-update:hover { filter: brightness(1.1); }

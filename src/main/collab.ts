@@ -1,25 +1,23 @@
-// ─── LAN collaboration (host + guests, no central server) ────────
+// ─── LAN collaboration: shared project folder (host + guests) ────
 //
-// Topology: whoever opens the .tex can "host" a room. The host's main process
-// runs a WebSocket server with two endpoints on one port:
-//   /<roomId>   Yjs sync protocol (y-websocket wire format) + awareness relay
-//   /control    JSON control channel: join/snapshot/asset sync/peers
-// Every renderer (host's included) is a plain y-websocket client, so the host
-// UI has no privileged code path.
+// Model: the host's project directory is THE shared folder. Guests get a
+// local mirror under Documents; every non-artifact file — main .tex, images,
+// cls, subfiles — syncs as whole-file ops through the host, which relays them
+// to the other guests. Edits from any source (typing in the editor, external
+// tools like Claude Code, files dropped into the folder) all travel the same
+// path: local file watcher → publish → host → broadcast → apply + local
+// watcher echo-suppressed. No versioning, no merge: last write wins, per the
+// product decision that concurrent edits to one file are out of scope.
 //
-// The main .tex travels as a CRDT (Y.Text), so concurrent typing merges
-// without overwriting. Every other project file (images, cls, sub-tex…) is
-// synced as whole-file "asset" ops through the host, which relays them to the
-// other guests — bidirectional, last-write-wins.
+// Each machine compiles locally with its own TeX — the PDF is never synced.
 //
-// Guests keep a local mirror of the project under Documents so each machine
-// compiles with its own TeX — the PDF itself is never synced.
-//
-// Discovery: the host UDP-broadcasts a room beacon every 1.5s; non-host
-// instances listen and surface the room list in the UI. Manual "IP:port"
-// join is the fallback for networks that block broadcast.
+// Wire: one WebSocket port (48712+), single /control endpoint, JSON frames.
+//   hello {name, rejoin?} → welcome {files:[{p,b64}]} | rejoined
+//   file  {p, b64|null, from}   (b64 null = delete)
+//   peers {peers:[{id,name,role}]} / bye / ping→pong
+// Discovery: host UDP-broadcasts a beacon (magic LLTX1) every 1.5s on 48713.
 
-const { ipcMain, app } = require('electron');
+const { ipcMain, app, shell } = require('electron');
 const dgram = require('dgram');
 const http = require('http');
 const os = require('os');
@@ -27,11 +25,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer, WebSocket } = require('ws');
-const Y = require('yjs');
-const syncProtocol = require('y-protocols/sync');
-const awarenessProtocol = require('y-protocols/awareness');
-const encoding = require('lib0/encoding');
-const decoding = require('lib0/decoding');
 const { log } = require('./logger');
 
 const DISC_PORT = 48713;
@@ -40,7 +33,7 @@ const WS_PORT_MIN = 48712;
 const WS_PORT_MAX = 48740;
 const BEACON_INTERVAL = 1500;
 const ROOM_TTL = 6000;
-const MAX_ASSET_BYTES = 100 * 1024 * 1024;
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const ARTIFACT_RE = /\.(pdf|log|aux|out|toc|lof|lot|bbl|blg|fls|fdb_latexmk|synctex\.gz|bcf|run\.xml|xyc|dvi)$/i;
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'build', 'out', 'dist', '.vscode', '__pycache__', 'sync']);
 
@@ -75,7 +68,7 @@ function collectProjectFiles(rootDir) {
       const abs = path.join(dir, ent.name);
       let st;
       try { st = fs.statSync(abs); } catch { continue; }
-      if (!st.isFile() || st.size > MAX_ASSET_BYTES) continue;
+      if (!st.isFile() || st.size > MAX_FILE_BYTES) continue;
       out.push({ rel: path.relative(rootDir, abs).split(path.sep).join('/'), abs });
     }
   };
@@ -91,18 +84,24 @@ function safeRelPath(rel) {
   return path.join(...parts);
 }
 
-// Apply a remote asset op to disk. The resulting bytes' hash is recorded so
-// our own file watcher doesn't echo it back to the network (loop prevention).
-function applyAsset(baseDir, rel, b64) {
+// Apply a remote file op to disk. b64 null = delete. The resulting bytes'
+// hash (null for deletes) is recorded so our own watcher doesn't echo the
+// write back onto the network (loop prevention). The main .tex is never
+// deleted — losing the host's real file to a stray guest delete is worse
+// than a stale copy.
+function applyFileOp(baseDir, rel, b64, mainFile) {
   const relOk = safeRelPath(rel);
   if (!relOk) return { ok: false, error: 'bad path' };
   const abs = path.join(baseDir, relOk);
+  const isMain = rel === mainFile;
   if (b64 === null || b64 === undefined) {
+    if (isMain) return { ok: false, error: 'refusing to delete main file' };
     try { fs.rmSync(abs, { force: true }); } catch {}
+    room && room.echo.set(abs, { hash: null, ts: Date.now() });
     return { ok: true, abs };
   }
   const buf = Buffer.from(b64, 'base64');
-  if (buf.length > MAX_ASSET_BYTES) return { ok: false, error: 'too large' };
+  if (buf.length > MAX_FILE_BYTES) return { ok: false, error: 'too large' };
   try {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, buf);
@@ -113,25 +112,37 @@ function applyAsset(baseDir, rel, b64) {
   }
 }
 
-// Filter out paths that (a) are the CRDT-managed main .tex, (b) are build
-// artifacts, or (c) match a hash we ourselves just wrote from a remote op.
-function filterPublishable(paths, mainPath) {
+// Decide which locally-changed paths should be published: not build
+// artifacts, and not files whose current on-disk bytes match what we just
+// wrote from a remote op (watcher echo). ENOENT means the file was deleted
+// — publish a delete op unless the echo says we deleted it ourselves.
+function filterPublishable(paths, baseDir) {
   const now = Date.now();
   for (const [k, v] of room.echo) if (now - v.ts > 15000) room.echo.delete(k);
   const out = [];
   for (const p of paths || []) {
     if (!p) continue;
     const abs = path.resolve(p);
-    if (path.resolve(abs) === path.resolve(mainPath)) continue;
     if (ARTIFACT_RE.test(path.basename(abs))) continue;
+    let content = null;
+    let missing = false;
     try {
       const st = fs.statSync(abs);
-      if (!st.isFile() || st.size > MAX_ASSET_BYTES) continue;
-      const hash = md5(fs.readFileSync(abs));
-      const seen = room.echo.get(abs);
-      if (seen && seen.hash === hash) { room.echo.delete(abs); continue; }
+      if (!st.isFile() || st.size > MAX_FILE_BYTES) continue;
+      content = fs.readFileSync(abs);
+    } catch (e) {
+      if (e.code !== 'ENOENT') continue;
+      missing = true;
+    }
+    const hash = missing ? null : md5(content);
+    const seen = room.echo.get(abs);
+    if (seen && seen.hash === hash) { room.echo.delete(abs); continue; }
+    try {
+      const rel = path.relative(baseDir, abs).split(path.sep).join('/');
+      if (!safeRelPath(rel)) continue;
+      if (missing && rel === room.mainFile) continue; // never delete the main tex
+      out.push({ rel, b64: missing ? null : content.toString('base64') });
     } catch { continue; }
-    out.push(abs);
   }
   return out;
 }
@@ -210,80 +221,7 @@ function listRooms() {
   return alive.sort((a, b) => b.lastSeen - a.lastSeen);
 }
 
-// ─── Host: Yjs sync endpoint (y-websocket wire protocol) ─────────
-
-function wsSend(conn, data) {
-  try { conn.send(data, {}, (err) => { if (err) conn.terminate(); }); }
-  catch { try { conn.terminate(); } catch {} }
-}
-
-function broadcastSync(data, except) {
-  for (const conn of room.syncConns) if (conn !== except) wsSend(conn, data);
-}
-
-function setupSyncConn(conn) {
-  conn.binaryType = 'arraybuffer';
-  conn.on('error', () => {});
-  const roomAtConnect = room;
-  const controlled = new Set();
-  room.syncConns.add(conn);
-  room.connIds.set(conn, controlled);
-
-  conn.on('message', (data) => {
-    try {
-      const decoder = decoding.createDecoder(new Uint8Array(data));
-      const encoder = encoding.createEncoder();
-      const messageType = decoding.readVarUint(decoder);
-      switch (messageType) {
-        case 0: // sync
-          encoding.writeVarUint(encoder, 0);
-          syncProtocol.readSyncMessage(decoder, encoder, room.ydoc, conn);
-          // length 1 = only the type byte was written → nothing to reply
-          if (encoding.length(encoder) > 1) wsSend(conn, encoding.toUint8Array(encoder));
-          break;
-        case 1: // awareness
-          awarenessProtocol.applyAwarenessUpdate(room.awareness, decoding.readVarUint8Array(decoder), conn);
-          break;
-      }
-    } catch (e) {
-      log('ERROR', `[collab] sync message error: ${e.message}`);
-    }
-  });
-
-  // Start the handshake: ask the newcomer for its state vector
-  const enc = encoding.createEncoder();
-  encoding.writeVarUint(enc, 0);
-  syncProtocol.writeSyncStep1(enc, room.ydoc);
-  wsSend(conn, encoding.toUint8Array(enc));
-  const states = room.awareness.getStates();
-  if (states.size > 0) {
-    const e2 = encoding.createEncoder();
-    encoding.writeVarUint(e2, 1);
-    encoding.writeVarUint8Array(e2, awarenessProtocol.encodeAwarenessUpdate(room.awareness, Array.from(states.keys())));
-    wsSend(conn, encoding.toUint8Array(e2));
-  }
-
-  // Dead-connection sweep, same approach as the reference y-websocket server
-  let pongReceived = true;
-  const pingTimer = setInterval(() => {
-    if (!pongReceived) { try { conn.terminate(); } catch {} return; }
-    pongReceived = false;
-    try { conn.ping(); } catch { try { conn.terminate(); } catch {} }
-  }, 30000);
-  conn.on('pong', () => { pongReceived = true; });
-
-  conn.on('close', () => {
-    clearInterval(pingTimer);
-    // teardown may already have replaced/nullified the room — the close event
-    // fires asynchronously after terminate()
-    if (room !== roomAtConnect || !room) return;
-    room.syncConns.delete(conn);
-    room.connIds.delete(conn);
-    if (controlled.size) awarenessProtocol.removeAwarenessStates(room.awareness, Array.from(controlled), null);
-  });
-}
-
-// ─── Host: control channel ───────────────────────────────────────
+// ─── Control protocol (host side) ────────────────────────────────
 
 function peersList() {
   const peers = [{ id: 'host', name: room.userName, role: 'host' }];
@@ -308,6 +246,11 @@ function hostSnapshot() {
   }));
 }
 
+function wsSend(conn, data) {
+  try { conn.send(data, {}, (err) => { if (err) conn.terminate(); }); }
+  catch { try { conn.terminate(); } catch {} }
+}
+
 function setupControlConn(conn) {
   conn.on('error', () => {});
   conn.on('message', (data) => {
@@ -322,8 +265,8 @@ function setupControlConn(conn) {
         const g = { id: randId(8), name: String(m.name || '队友').slice(0, 32), lastSeen: Date.now() };
         room.guests.set(conn, g);
         if (m.rejoin) {
-          // Reconnect of a known guest: skip the full snapshot, CRDT state
-          // arrives through the sync endpoint on its own.
+          // Reconnect of a known guest: skip the snapshot, the file ops that
+          // matter will flow as usual from here on.
           log('INFO', `[collab] guest rejoined: ${g.name} (${g.id})`);
           wsSend(conn, JSON.stringify({
             t: 'rejoined', roomId: room.id, roomName: room.name,
@@ -340,11 +283,14 @@ function setupControlConn(conn) {
         broadcastPeers();
         break;
       }
-      case 'asset': {
-        const res = applyAsset(path.dirname(room.hostPath), m.p, m.b64);
+      case 'file': {
+        // guest → host: apply locally, relay to everyone else
+        const res = applyFileOp(path.dirname(room.hostPath), m.p, m.b64, room.mainFile);
         if (res.ok) {
-          log('INFO', `[collab] asset from ${guest ? guest.name : '?'}: ${m.p}`);
-          broadcastControl({ t: 'asset', p: m.p, b64: m.b64, from: guest ? guest.id : '?' }, conn);
+          broadcastControl({ t: 'file', p: m.p, b64: m.b64, from: guest ? guest.id : '?' }, conn);
+          log('INFO', `[collab] file ${m.b64 == null ? 'delete' : 'update'} from ${guest ? guest.name : '?'}: ${m.p}`);
+        } else {
+          log('WARN', `[collab] file op rejected (${m.p}): ${res.error}`);
         }
         break;
       }
@@ -397,61 +343,27 @@ function startBeacon() {
 
 async function startHost(filePath, content, userName) {
   const hostPath = path.resolve(filePath);
-  const ydoc = new Y.Doc();
-  const ytext = ydoc.getText('content');
-  if (content && ytext.toString() === '') ytext.insert(0, content, 'seed');
 
-  const awareness = new awarenessProtocol.Awareness(ydoc);
-  awareness.setLocalState(null);
+  // Collaborative editing writes straight to the real file — flush whatever
+  // the editor holds first so disk is the single source of truth.
+  try { fs.writeFileSync(hostPath, content, 'utf-8'); opts.setLastSaved(content); } catch {}
 
   room = {
     role: 'host', id: randId(6), name: path.basename(hostPath), wsPort: 0,
-    hostPath, userName: String(userName || '主机').slice(0, 32),
-    ydoc, ytext, awareness,
-    syncConns: new Set(), connIds: new Map(), guests: new Map(),
-    echo: new Map(),
-    httpServer: null, wssSync: null, wssControl: null,
+    hostPath, mainFile: path.basename(hostPath),
+    userName: String(userName || '主机').slice(0, 32),
+    guests: new Map(), echo: new Map(),
+    httpServer: null, wssControl: null,
     udpSocket: null, udpTimer: null, guestSweep: null,
   };
 
-  // Handlers capture the room they belong to: teardown nullifies the global
-  // before async callbacks (late conn close, late doc update) fire.
-  const roomRef = room;
-  awareness.on('update', ({ added, updated, removed }, origin) => {
-    if (room !== roomRef) return;
-    const changed = added.concat(updated, removed);
-    const connControlled = room.connIds.get(origin);
-    if (connControlled) {
-      added.forEach((c) => connControlled.add(c));
-      removed.forEach((c) => connControlled.delete(c));
-    }
-    const enc = encoding.createEncoder();
-    encoding.writeVarUint(enc, 1);
-    encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(awareness, changed));
-    broadcastSync(encoding.toUint8Array(enc), origin);
-  });
-
-  // Relay incremental document updates to every other sync connection.
-  // `origin` is the WebSocket whose applyUpdate caused this — skip it so a
-  // client never receives its own edit back.
-  ydoc.on('update', (update, origin) => {
-    if (room !== roomRef) return;
-    const enc = encoding.createEncoder();
-    encoding.writeVarUint(enc, 0);
-    syncProtocol.writeUpdate(enc, update);
-    broadcastSync(encoding.toUint8Array(enc), origin);
-  });
-
-  // Port picking: first free port in the range wins
   room.httpServer = http.createServer((_req, res) => { res.end('LiveLaTeX collab'); });
-  room.wssSync = new WebSocketServer({ noServer: true });
   room.wssControl = new WebSocketServer({ noServer: true });
-  room.wssSync.on('connection', setupSyncConn);
   room.wssControl.on('connection', setupControlConn);
   room.httpServer.on('upgrade', (req, socket, head) => {
     const { pathname } = new URL(req.url, 'http://localhost');
     if (pathname === '/control') room.wssControl.handleUpgrade(req, socket, head, (c) => room.wssControl.emit('connection', c, req));
-    else room.wssSync.handleUpgrade(req, socket, head, (c) => room.wssSync.emit('connection', c, req));
+    else socket.destroy();
   });
 
   for (let port = WS_PORT_MIN; port <= WS_PORT_MAX; port++) {
@@ -472,7 +384,7 @@ async function startHost(filePath, content, userName) {
   startBeacon();
   startGuestSweep();
   stopDiscovery(); // host doesn't scan while hosting (frees the UDP port for guests)
-  log('INFO', `[collab] hosting "${room.name}" as ws://0.0.0.0:${room.wsPort}/${room.id}`);
+  log('INFO', `[collab] hosting "${room.name}" as ws://0.0.0.0:${room.wsPort} (room ${room.id})`);
   sendToRenderer('collab:status', { state: 'hosting', roomId: room.id, roomName: room.name, wsPort: room.wsPort });
   return { ok: true, role: 'host', roomId: room.id, roomName: room.name, wsPort: room.wsPort };
 }
@@ -507,9 +419,9 @@ function attachCtlHandlers(ws, onMessage) {
     if (!room || room.role !== 'guest') return;
     switch (m.t) {
       case 'peers': sendToRenderer('collab:peers', m.peers || []); break;
-      case 'asset': {
-        const res = applyAsset(room.mirrorDir, m.p, m.b64);
-        if (!res.ok) log('WARN', `[collab] asset apply failed: ${m.p}: ${res.error}`);
+      case 'file': {
+        const res = applyFileOp(room.mirrorDir, m.p, m.b64, room.mainFile);
+        if (!res.ok) log('WARN', `[collab] file op failed (${m.p}): ${res.error}`);
         break;
       }
       case 'bye': {
@@ -561,8 +473,12 @@ async function joinRoom({ addr, wsPort, name }) {
     ctl.send(JSON.stringify({ t: 'hello', name: String(name || '队友').slice(0, 32) }));
   });
 
-  // Materialize the project mirror locally so this machine can compile
+  // Materialize the project mirror locally so this machine can compile —
+  // this folder IS the user's copy: they can open it, drop files in, point
+  // external tools at it; everything syncs back through the host.
   const mirrorDir = mirrorDirFor(welcome.roomName, welcome.roomId);
+  fs.rmSync(mirrorDir, { recursive: true, force: true });
+  fs.mkdirSync(mirrorDir, { recursive: true });
   for (const f of welcome.files || []) {
     const rel = safeRelPath(f.p);
     if (!rel) continue;
@@ -592,7 +508,10 @@ async function joinRoom({ addr, wsPort, name }) {
 
   log('INFO', `[collab] joined "${welcome.roomName}" @ ${addr}:${wsPort}, mirror at ${mirrorDir}`);
   sendToRenderer('collab:status', { state: 'connected', roomName: room.roomName, role: 'guest' });
-  return { ok: true, role: 'guest', filePath: mainPath, roomName: welcome.roomName, hostName: welcome.hostName, roomId: welcome.roomId, addr, wsPort };
+  return {
+    ok: true, role: 'guest', filePath: mainPath, projectDir: mirrorDir,
+    roomName: welcome.roomName, hostName: welcome.hostName, roomId: welcome.roomId, addr, wsPort,
+  };
 }
 
 // ─── Teardown ────────────────────────────────────────────────────
@@ -600,13 +519,10 @@ async function joinRoom({ addr, wsPort, name }) {
 function teardownHost(reason) {
   if (!room || room.role !== 'host') return;
   broadcastControl({ t: 'bye' });
-  for (const conn of [...room.guests.keys(), ...room.syncConns]) { try { conn.terminate(); } catch {} }
+  for (const conn of room.guests.keys()) { try { conn.terminate(); } catch {} }
   clearInterval(room.udpTimer);
   clearInterval(room.guestSweep);
   try { room.udpSocket.close(); } catch {}
-  try { room.awareness.destroy(); } catch {}
-  try { room.ydoc.destroy(); } catch {}
-  try { room.wssSync.close(); } catch {}
   try { room.wssControl.close(); } catch {}
   try { room.httpServer.close(); } catch {}
   log('INFO', `[collab] room closed (${reason || 'local'})`);
@@ -667,24 +583,21 @@ function initCollab(opts_) {
   });
 
   // Renderer noticed local project files change (via the existing source
-  // watcher): ship non-main files to the network. Host relays to guests,
-  // guests send to the host.
+  // watcher): ship them to the network. Host relays to other guests, guests
+  // send to the host. b64 null encodes a deletion.
   ipcMain.handle('collab:publish', (_e, paths) => {
     if (!room) return { ok: false };
-    const mainPath = room.role === 'host' ? room.hostPath : room.mainPath;
-    const publishable = filterPublishable(paths, mainPath);
-    for (const abs of publishable) {
-      const rel = path.relative(room.role === 'host' ? path.dirname(room.hostPath) : room.mirrorDir, abs).split(path.sep).join('/');
-      let b64;
-      try { b64 = fs.readFileSync(abs).toString('base64'); } catch { continue; }
+    const baseDir = room.role === 'host' ? path.dirname(room.hostPath) : room.mirrorDir;
+    const ops = filterPublishable(paths, baseDir);
+    for (const op of ops) {
       if (room.role === 'host') {
-        broadcastControl({ t: 'asset', p: rel, b64, from: 'host' });
+        broadcastControl({ t: 'file', p: op.rel, b64: op.b64, from: 'host' });
       } else {
-        try { room.ctl.send(JSON.stringify({ t: 'asset', p: rel, b64, from: room.id })); } catch {}
+        try { room.ctl.send(JSON.stringify({ t: 'file', p: op.rel, b64: op.b64, from: room.id })); } catch {}
       }
-      if (publishable.length > 0) log('INFO', `[collab] published asset: ${rel}`);
     }
-    return { ok: true, count: publishable.length };
+    if (ops.length) log('INFO', `[collab] published ${ops.length} file op(s): ${ops.map((o) => o.rel).join(', ')}`);
+    return { ok: true, count: ops.length };
   });
 
   ipcMain.handle('collab:rooms-now', () => listRooms());
@@ -693,7 +606,15 @@ function initCollab(opts_) {
     roomName: room.role === 'host' ? room.name : room.roomName,
     wsPort: room.wsPort || 0,
     hostAddr: room.role === 'guest' ? `${room.hostAddr}:${room.wsPort}` : '',
+    projectDir: room.role === 'host' ? path.dirname(room.hostPath) : room.mirrorDir,
+    filePath: room.role === 'host' ? room.hostPath : room.mainPath,
   } : { active: false });
+
+  ipcMain.handle('app:open-path', async (_e, dirPath) => {
+    if (!dirPath || !fs.existsSync(dirPath)) return { ok: false, error: '路径不存在' };
+    const res = await shell.openPath(dirPath);
+    return res ? { ok: false, error: res } : { ok: true };
+  });
 }
 
 function shutdownCollab() {

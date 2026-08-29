@@ -1,6 +1,6 @@
 {
   "name": "livelatex",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Real-time LaTeX editor with live PDF preview",
   "main": "dist/main/index.js",
   "scripts": {
@@ -30,12 +30,7 @@
     "codemirror": "^6.0.1",
     "codemirror-lang-latex": "^0.4.2",
     "electron-store": "^8.2.0",
-    "lib0": "^0.2.117",
     "pdfjs-dist": "^4.8.0",
-    "ws": "^8.21.3",
-    "y-codemirror.next": "^0.3.6",
-    "y-protocols": "^1.0.7",
-    "y-websocket": "^2.1.0",
-    "yjs": "^13.6.32"
+    "ws": "^8.21.3"
   }
 }

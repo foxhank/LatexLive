@@ -111,6 +111,14 @@
           <button id="btn-detect-engine" class="btn-secondary">探测系统中引擎</button>
           <span id="detect-result" class="hidden"></span>
         </div>
+        <div class="form-group">
+          <label>软件更新（只更新程序本身，宏包不动）</label>
+          <div class="input-with-button">
+            <code id="update-status" class="collab-path">当前版本</code>
+            <button id="btn-check-update" class="btn-secondary">检查更新</button>
+          </div>
+          <button id="btn-install-update" class="btn-update-install hidden">重启并安装更新</button>
+        </div>
       </div>
       <div class="modal-footer">
         <button id="btn-settings-save">保存</button>
@@ -153,6 +161,14 @@
         </div>
         <div id="collab-active-view" class="hidden">
           <div class="collab-room-banner" id="collab-room-info"></div>
+          <div class="form-group">
+            <label>本机共享文件夹（往里放文件 = 全员同步，可把路径告诉 AI 助手）</label>
+            <div class="collab-path-row">
+              <code id="collab-path" class="collab-path"></code>
+              <button id="btn-collab-open-dir" class="btn-secondary" title="在资源管理器中打开">📁 打开</button>
+              <button id="btn-collab-copy-path" class="btn-secondary" title="复制文件夹路径">复制路径</button>
+            </div>
+          </div>
           <div class="form-group">
             <label>当前成员</label>
             <div id="collab-peers" class="collab-peers"></div>

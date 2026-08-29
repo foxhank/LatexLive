@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('api', {
   app: {
     quit: () => ipcRenderer.invoke('app:quit'),
     getPath: (name) => ipcRenderer.invoke('app:get-path', name),
+    openPath: (dirPath) => ipcRenderer.invoke('app:open-path', dirPath),
   },
 
   collab: {
@@ -51,9 +52,15 @@ contextBridge.exposeInMainWorld('api', {
     state: () => ipcRenderer.invoke('collab:state'),
   },
 
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    state: () => ipcRenderer.invoke('update:state'),
+    install: () => ipcRenderer.invoke('update:install'),
+  },
+
   on: (channel, callback) => {
     const validChannels = ['pdf:updated', 'compile:progress', 'app:before-quit', 'source:changed',
-      'collab:rooms', 'collab:peers', 'collab:status', 'collab:closed'];
+      'collab:rooms', 'collab:peers', 'collab:status', 'collab:closed', 'update:status'];
     if (validChannels.includes(channel)) {
       const sub = (_event, ...args) => callback(...args);
       ipcRenderer.on(channel, sub);

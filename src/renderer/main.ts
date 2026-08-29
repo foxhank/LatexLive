@@ -3,7 +3,7 @@ import { EditorState } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
 import { latex } from 'codemirror-lang-latex';
 import * as pdfjsLib from 'pdfjs-dist';
-import { collab, setupCollab, isCollabActive, getCollabExtensions, getDocContent, flushCollabSave, handleSourceChanged, startHost, joinRoom } from './collab';
+import { collab, setupCollab, isCollabActive, flushCollabSave, handleSourceChanged, notifyLocalEdit, startHost, joinRoom } from './collab';
 
 // Set worker path — copied from node_modules during build
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
@@ -73,9 +73,6 @@ function createEditor() {
       EditorView.theme({
         '&': { fontFamily: `${appState.settings.editorFont || 'Consolas'}, monospace`, fontSize: `${appState.settings.editorFontSize || 14}px` },
       }),
-      // CRDT binding replaces the plain doc when a collab session is live;
-      // yCollab provides its own undo history + remote cursors/selections
-      ...(isCollabActive() ? getCollabExtensions() : []),
       keymap.of([
         { key: 'Mod-s', run: () => { if (isCollabActive()) { flushCollabSave(); compileStatus.textContent = '协作模式自动保存 ✓'; compileStatus.className = 'status-success'; } else saveFile(); return true; } },
         { key: 'Mod-Shift-s', run: () => { if (!isCollabActive()) saveAsFile(); return true; } },
@@ -90,6 +87,7 @@ function createEditor() {
           appState.modified = true;
           updateModified();
           scheduleCompile();
+          if (isCollabActive()) notifyLocalEdit(!composing);
         }
       }),
     ],
@@ -224,14 +222,6 @@ function showResultErrors(result) {
 
 async function runCompile() {
   if (appState.compiling || !appState.currentFilePath) return;
-  // Guest entering a room: editor may still be waiting for the first CRDT
-  // sync — compiling the transient empty doc would just flash error noise.
-  if (isCollabActive() && !collab.syncedOnce) {
-    compileStatus.textContent = '等待内容同步…';
-    compileStatus.className = 'status-running';
-    setTimeout(runCompile, 300);
-    return;
-  }
   appState.compiling = true;
   compileStatus.textContent = '编译中...';
   compileStatus.className = 'status-running';
@@ -295,11 +285,27 @@ async function runCompile() {
 }
 
 let debounceTimer = null;
+let firstPendingCompileAt = 0;
+
+// IME composition (pinyin etc.) writes intermediate text ("a", "ai", "yu…")
+// into the doc on every keystroke — compiling those states just makes the
+// preview flash garbage. Hold compiles until the composition commits.
+let composing = false;
+
+// Even if changes keep streaming in (an agent writing chunk after chunk),
+// never postpone the preview longer than this — silence-based debounce alone
+// could starve it for minutes.
+const MAX_COMPILE_WAIT = 5000;
 
 function scheduleCompile() {
   if (!appState.currentFilePath) return;
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(runCompile, appState.settings.debounceMs || 800);
+  if (composing) return;
+  if (!debounceTimer) firstPendingCompileAt = Date.now();
+  clearTimeout(debounceTimer);
+  const wait = appState.settings.debounceMs || 800;
+  const elapsed = Date.now() - firstPendingCompileAt;
+  const delay = elapsed >= MAX_COMPILE_WAIT ? 0 : Math.min(wait, MAX_COMPILE_WAIT - elapsed);
+  debounceTimer = setTimeout(() => { debounceTimer = null; runCompile(); }, delay);
 }
 
 function manualCompile() {
@@ -544,6 +550,23 @@ function setupListeners() {
   document.querySelector('.modal-backdrop').addEventListener('click', closeSettings);
   document.querySelector('.modal-close').addEventListener('click', closeSettings);
   $('error-close').addEventListener('click', () => errorPanel.classList.add('hidden'));
+
+  // Self-update UI
+  const updateStatusEl = $('update-status');
+  const applyUpdateStatus = (s) => {
+    if (!s) return;
+    updateStatusEl.textContent = s.phase === 'idle' && s.currentVersion ? `当前版本 ${s.currentVersion}` : (s.detail || s.phase);
+    updateStatusEl.title = s.detail || '';
+    $('btn-install-update').classList.toggle('hidden', s.phase !== 'ready');
+    $('btn-check-update').disabled = ['checking', 'downloading', 'extracting'].includes(s.phase);
+  };
+  window.api.update.state().then(applyUpdateStatus);
+  window.api.on('update:status', applyUpdateStatus);
+  $('btn-check-update').addEventListener('click', () => {
+    updateStatusEl.textContent = '检查中…';
+    window.api.update.check();
+  });
+  $('btn-install-update').addEventListener('click', () => window.api.update.install());
   $('btn-detect-engine').addEventListener('click', async () => {
     const engines = await window.api.compiler.detect();
     const el = $('detect-result');
@@ -555,6 +578,14 @@ function setupListeners() {
       el.textContent = '未检测到 LaTeX 编译器。请安装 TeX Live/MiKTeX 后在设置中配置路径。';
       el.style.color = 'var(--error)';
     }
+  });
+
+  // IME composition tracking — see scheduleCompile
+  editorContainer.addEventListener('compositionstart', () => { composing = true; });
+  editorContainer.addEventListener('compositionend', () => {
+    composing = false;
+    if (appState.currentFilePath) scheduleCompile();
+    if (isCollabActive()) notifyLocalEdit(true);
   });
 
   // Viewer page nav via scroll
@@ -680,7 +711,8 @@ async function init() {
   setupCollab({
     getAppState: () => appState,
     getEditorContent: () => editor.state.doc.toString(),
-    rebuildEditor,
+    setEditorContent,
+    isComposing: () => composing,
     updatePathUI,
     updateModified,
     runCompile,
