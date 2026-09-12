@@ -195,6 +195,24 @@ const bundledTexDir = (() => {
   return dev; // fallback
 })();
 
+// Scan PATH in-process instead of shelling out to `where`: `where` prints the
+// ANSI-codepage encoding of each hit (GBK on zh-CN Windows), and decoding that
+// as UTF-8 garbles any non-ASCII directory — the engine then fails to launch
+// and compiles die with an empty log ("编译工具无输出").
+function findOnPath(name) {
+  const dirs = (process.env.PATH || '').split(';').filter(Boolean);
+  const exts = path.extname(name) ? [''] : (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';');
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const p = path.join(dir, name + ext.toLowerCase());
+      try {
+        if (fs.statSync(p).isFile()) return p;
+      } catch {}
+    }
+  }
+  return null;
+}
+
 function getEngineCmd() {
   const customPath = store.get('enginePath', '');
   const engine = store.get('engine', 'xelatex');
@@ -207,10 +225,8 @@ function getEngineCmd() {
   // Try to find in PATH
   const candidates = [engine, 'latexmk', 'pdflatex', 'lualatex', 'xelatex'];
   for (const cmd of candidates) {
-    try {
-      const which = require('child_process').execSync(`where ${cmd}`, { encoding: 'utf-8', stdio: 'pipe' }).trim();
-      if (which) return which.split('\n')[0].trim();
-    } catch {}
+    const found = findOnPath(`${cmd}.exe`);
+    if (found) return found;
   }
   return engine; // fallback
 }
@@ -227,10 +243,7 @@ function detectEngines() {
 
   // Check system PATH
   for (const cmd of candidates) {
-    try {
-      require('child_process').execSync(`where ${cmd}`, { stdio: 'pipe', encoding: 'utf-8' });
-      found.push(cmd);
-    } catch {}
+    if (findOnPath(`${cmd}.exe`)) found.push(cmd);
   }
   return found;
 }
@@ -461,15 +474,36 @@ function readTexLog(logPath) {
   } catch { return ''; }
 }
 
+// pdflatex / latexmk / bibtex are not Unicode-aware on Windows argv, so never
+// hand them non-ASCII absolute paths: run with cwd at the project dir and pass
+// only relative args, and fall back to an ASCII jobname when the .tex filename
+// itself is non-ASCII (outputs are renamed back afterwards).
+function texJobName(fileName) {
+  return /^[\x20-\x7E]+$/.test(fileName) ? fileName : 'out';
+}
+
+// Rename engine outputs written under the ASCII fallback jobname back to the
+// real document name — preview/synctex/export lookups all go through fileName.
+function restoreJobNames(outDir, job, fileName) {
+  if (job === fileName) return;
+  for (const entry of fs.readdirSync(outDir)) {
+    if (entry.startsWith(`${job}.`)) {
+      try { fs.renameSync(path.join(outDir, entry), path.join(outDir, fileName + entry.slice(job.length))); } catch {}
+    }
+  }
+}
+
 function runCompile(filePath, resolve) {
   const engine = store.get('engine', 'xelatex');
   // Build INSIDE the project copy: cwd already points at it, so relative
   // assets (fonts/, figures/, cls/sty shipped with the project) resolve
   // naturally, and outputs of different projects never collide.
-  const tempDir = path.join(path.dirname(filePath), 'build');
+  const workDir = path.dirname(filePath);
+  const tempDir = path.join(workDir, 'build');
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
   const fileName = path.basename(filePath, '.tex');
+  const job = texJobName(fileName);
   const outDir = tempDir;
 
   // Use getEngineCmd() which checks bundled TinyTeX, then PATH, then falls back
@@ -477,9 +511,9 @@ function runCompile(filePath, resolve) {
   const args = [];
 
   if (engine === 'latexmk') {
-    args.push('-xelatex', '-interaction=nonstopmode', '-synctex=1', `-output-directory=${outDir}`, filePath);
+    args.push('-xelatex', '-interaction=nonstopmode', '-synctex=1', '-output-directory=build', `-jobname=${job}`, `${fileName}.tex`);
   } else {
-    args.push('-interaction=nonstopmode', '-synctex=1', `-output-directory=${outDir}`, filePath);
+    args.push('-interaction=nonstopmode', '-synctex=1', '-output-directory=build', `-jobname=${job}`, `${fileName}.tex`);
   }
 
   let attempts = 0;
@@ -497,12 +531,21 @@ function runCompile(filePath, resolve) {
   function doCompile() {
     attempts++;
     const startTime = Date.now();
-    execFile(cmd, args, { cwd: path.dirname(filePath), timeout: 120000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { cwd: workDir, timeout: 120000 }, (err, stdout, stderr) => {
+      restoreJobNames(outDir, job, fileName);
       const logPath = path.join(outDir, `${fileName}.log`);
       const logContent = readTexLog(logPath);
 
       const pdfPath = path.join(outDir, `${fileName}.pdf`);
       const pdfExists = fs.existsSync(pdfPath);
+
+      // A failed launch (bad/garbled path, missing exe) writes no log at all —
+      // surface the reason instead of letting the UI show a generic "no output".
+      if (err && err.code === 'ENOENT' && !pdfExists) {
+        log('ERROR', `[compile] engine failed to start: ${cmd} (${err.message})`);
+        resolve({ success: false, pdfPath: null, errors: [{ line: null, message: `无法启动编译器 "${cmd}"，请在设置中检查编译器路径` }], log: '', elapsed: Date.now() - startTime });
+        return;
+      }
 
       const errors = parseLatexErrors(logContent);
       const elapsed = Date.now() - startTime;
@@ -637,16 +680,14 @@ function resolveLatexmk() {
   if (customPath) return null; // explicit engine path: user knows better, use it directly
   const bundled = path.join(bundledTexDir, 'latexmk.exe');
   if (fs.existsSync(bundled)) return bundled;
-  try {
-    const which = execSync('where latexmk', { encoding: 'utf-8', stdio: 'pipe' }).trim();
-    return which ? which.split('\n')[0].trim() : null;
-  } catch { return null; }
+  return findOnPath('latexmk.exe');
 }
 
 async function manualFullPasses(texPath, engineCmd, outDir) {
   const srcDir = path.dirname(texPath);
   const fileName = path.basename(texPath, '.tex');
-  const baseArgs = ['-interaction=nonstopmode', '-synctex=1', `-output-directory=${outDir}`, texPath];
+  const job = texJobName(fileName);
+  const baseArgs = ['-interaction=nonstopmode', '-synctex=1', '-output-directory=build', `-jobname=${job}`, `${fileName}.tex`];
   const run = () => runEngine(engineCmd, baseArgs, { cwd: srcDir, timeout: 300000 });
 
   await run();
@@ -658,7 +699,7 @@ async function manualFullPasses(texPath, engineCmd, outDir) {
     const bibtex = [path.join(engineDir, 'bibtex.exe'), path.join(bundledTexDir, 'bibtex.exe')]
       .find((p) => fs.existsSync(p));
     if (bibtex) {
-      await runEngine(bibtex, [fileName], {
+      await runEngine(bibtex, [job], {
         cwd: outDir, timeout: 120000,
         env: { ...process.env, BIBINPUTS: srcDir, BSTINPUTS: srcDir },
       });
@@ -668,6 +709,7 @@ async function manualFullPasses(texPath, engineCmd, outDir) {
   // Two more passes settle the TOC / cross-references
   await run();
   await run();
+  restoreJobNames(outDir, job, fileName);
 }
 
 async function exportCompile(texPath) {
@@ -681,6 +723,7 @@ async function exportCompile(texPath) {
 
   const engine = store.get('engine', 'xelatex');
   const latexmk = resolveLatexmk();
+  const job = texJobName(fileName);
   // latexmk reruns the engine and runs bibtex/biber as needed in one call
   const latexmkFlag = { xelatex: '-xelatex', pdflatex: '-pdf', lualatex: '-lualatex', latexmk: '-xelatex' }[engine] || '-xelatex';
 
@@ -689,11 +732,12 @@ async function exportCompile(texPath) {
   for (let attempt = 0; attempt < 50; attempt++) {
     const startTime = Date.now();
     if (latexmk) {
-      await runEngine(latexmk, [latexmkFlag, '-interaction=nonstopmode', '-synctex=1', `-output-directory=${outDir}`, texPath],
+      await runEngine(latexmk, [latexmkFlag, '-interaction=nonstopmode', '-synctex=1', '-output-directory=build', `-jobname=${job}`, `${fileName}.tex`],
         { cwd: path.dirname(texPath), timeout: 600000 });
     } else {
       await manualFullPasses(texPath, getEngineCmd(), outDir);
     }
+    restoreJobNames(outDir, job, fileName);
     const log = readLog();
     const elapsed = Date.now() - startTime;
 
